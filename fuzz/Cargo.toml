@@ -1,0 +1,28 @@
+[package]
+name = "synthswipe-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+synthswipe = { path = "../crates/synthswipe" }
+
+[[bin]]
+name = "fuzz_decoder"
+path = "fuzz_targets/fuzz_decoder.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_lexicon"
+path = "fuzz_targets/fuzz_lexicon.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

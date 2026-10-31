@@ -1,0 +1,15 @@
+[package]
+name = "synthboard-core"
+description = "Keyboard behaviour: layouts, touch, text mirror and commands"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+synthswipe = { path = "../synthswipe" }
+boltffi = "0.32.1"
+unicode-normalization = "0.1.26"
+unicode-segmentation = "1.13.3"
+
+[lints]
+workspace = true

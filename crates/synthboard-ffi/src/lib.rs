@@ -1,0 +1,125 @@
+//! Binding between the Android shell and the Rust core. No logic lives here:
+//! it only stops panics at the boundary, which BoltFFI does not do by itself.
+
+use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+
+use boltffi::export;
+use synthboard_core::{Catalog, EmojiGroup, Engine, Event, NextWords, Step};
+use synthswipe::{Affinities, Grammar, Lexicon};
+
+boltffi::scaffolding!();
+
+/// The keyboard, as seen from Kotlin.
+#[export]
+pub struct Keyboard {
+    engine: Mutex<Engine>,
+}
+
+/// Runs `work`, turning a panic into the empty result so that the keyboard
+/// process survives. The caller decides how to recover.
+fn guarded<T: Default>(work: impl FnOnce() -> T) -> (T, bool) {
+    catch_unwind(AssertUnwindSafe(work)).map_or_else(|_| (T::default(), true), |value| (value, false))
+}
+
+fn parse_lexicon(bytes: &[u8]) -> Lexicon {
+    let text = String::from_utf8_lossy(bytes);
+    Lexicon::with_languages(text.lines().filter_map(|line| {
+        let (rest, languages) = line.rsplit_once(',')?;
+        let (word, weight) = rest.rsplit_once(',')?;
+        Some((word, weight.parse::<f32>().ok()?, languages.parse::<u8>().ok()?))
+    }))
+}
+
+#[export]
+impl Keyboard {
+    pub fn new() -> Self {
+        Self { engine: Mutex::new(Engine::new()) }
+    }
+
+    /// Handles one event. After a panic the engine restarts empty, so taps
+    /// keep working and the shell reopens it on the next `Shown` (X-9).
+    pub fn step(&self, event: Event) -> Step {
+        let mut engine = self.lock();
+        let (step, panicked) = guarded(|| engine.step(event));
+        if panicked {
+            let lexicon = engine.lexicon();
+            *engine = Engine::new();
+            if let Some(lexicon) = lexicon {
+                engine.set_lexicon(lexicon);
+            }
+        }
+        step
+    }
+
+    /// The word the gesture under way would give, or nothing. The engine is
+    /// locked only to copy the gesture, so taps never wait for this decode.
+    pub fn preview(&self) -> String {
+        let job = self.lock().preview_job();
+        let Some((decoding, path)) = job else {
+            return String::new();
+        };
+        guarded(|| decoding.preview(&path)).0
+    }
+
+    /// Parses the language data and gives it to the engine.
+    pub fn load_language(&self, affinities: Vec<u8>, forms: Vec<u8>, next_words: Vec<u8>) {
+        let (parsed, _) = guarded(|| {
+            Some((
+                Arc::new(Affinities::from_bytes(&affinities)),
+                Arc::new(Grammar::parse(&String::from_utf8_lossy(&forms))),
+                Arc::new(NextWords::parse(&String::from_utf8_lossy(&next_words))),
+            ))
+        });
+        if let Some((affinities, grammar, next_words)) = parsed {
+            self.lock().set_language(affinities, grammar, next_words);
+        }
+    }
+
+    /// Parses the emoji asset, keeps it for search and returns it for display.
+    pub fn load_emoji(&self, bytes: Vec<u8>) -> Vec<EmojiGroup> {
+        let parsed = guarded(|| Some(Arc::new(Catalog::parse(&String::from_utf8_lossy(&bytes)))));
+        let Some(catalog) = parsed.0 else {
+            return Vec::new();
+        };
+        self.lock().set_catalog(Arc::clone(&catalog));
+        catalog.groups.clone()
+    }
+
+    /// Parses `word,weight` lines and gives the lexicon to the engine.
+    pub fn load_lexicon(&self, bytes: Vec<u8>) {
+        let (lexicon, panicked) = guarded(|| Some(Arc::new(parse_lexicon(&bytes))));
+        if let (Some(lexicon), false) = (lexicon, panicked) {
+            self.lock().set_lexicon(lexicon);
+        }
+    }
+}
+
+impl Keyboard {
+    fn lock(&self) -> MutexGuard<'_, Engine> {
+        self.engine.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_stops_at_the_boundary() {
+        let (value, panicked) = guarded::<u32>(|| std::panic::panic_any("boom"));
+        assert_eq!((value, panicked), (0, true));
+    }
+
+    #[test]
+    fn normal_work_passes_through() {
+        assert_eq!(guarded(|| 7_u32), (7, false));
+    }
+
+    #[test]
+    fn the_lexicon_format_skips_bad_lines() {
+        let lexicon = parse_lexicon(b"bonjour,120,1\nnot a line\nbon,abc,1\nmerge,80,2\n");
+        assert_eq!(lexicon.len(), 2);
+        assert!(lexicon.contains("bonjour"));
+    }
+}

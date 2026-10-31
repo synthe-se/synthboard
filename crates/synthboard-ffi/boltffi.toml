@@ -1,0 +1,37 @@
+experimental = []
+
+[package]
+name = "synthboard-ffi"
+
+[targets.apple]
+enabled = false
+
+[targets.wasm]
+enabled = false
+
+[targets.java]
+enabled = false
+
+[targets.csharp]
+enabled = false
+
+[targets.python]
+enabled = false
+
+[targets.android]
+enabled = true
+min_sdk = 34
+ndk_version = "28.2.13676358"
+architectures = ["arm64"]
+output = "../../android/app/build/boltffi"
+
+[targets.android.kotlin]
+package = "app.synthboard.core"
+library_name = "synthboard_ffi"
+output = "../../android/app/build/boltffi/kotlin"
+
+[targets.android.pack]
+output = "../../android/app/build/boltffi/jniLibs"
+
+[targets.android.link]
+extra_args = ["-Wl,-z,max-page-size=16384"]
