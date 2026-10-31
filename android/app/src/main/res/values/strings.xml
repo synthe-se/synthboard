@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="recents">Recent</string>
+    <string name="search">Search</string>
+    <string name="setup">Getting started</string>
+    <string name="enable">1. Enable Synthboard</string>
+    <string name="choose">2. Choose Synthboard</string>
+    <string name="typing">Typing</string>
+    <string name="haptics">Key vibration</string>
+    <string name="trail">Swipe trail</string>
+    <string name="height">Keyboard height: %1$d%%</string>
+    <string name="learned">What the keyboard learned</string>
+    <string name="export">Export my words</string>
+    <string name="erase">Erase everything</string>
+    <string name="erased">Erased. The keyboard starts afresh next time it opens.</string>
+    <string name="development">Development</string>
+    <string name="send_traces">Send my traces</string>
+    <string name="no_tailscale">Tailscale is not available.</string>
+    <string name="forget">Forget “%1$s”</string>
+</resources>

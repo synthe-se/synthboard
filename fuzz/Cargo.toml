@@ -9,6 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
+synthboard-core = { path = "../crates/synthboard-core" }
 synthswipe = { path = "../crates/synthswipe" }
 
 [[bin]]
@@ -21,6 +22,20 @@ bench = false
 [[bin]]
 name = "fuzz_lexicon"
 path = "fuzz_targets/fuzz_lexicon.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_engine"
+path = "fuzz_targets/fuzz_engine.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_loaders"
+path = "fuzz_targets/fuzz_loaders.rs"
 test = false
 doc = false
 bench = false

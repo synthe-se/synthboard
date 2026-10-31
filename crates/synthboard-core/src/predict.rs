@@ -38,6 +38,6 @@ mod tests {
     fn lines_give_their_words_and_bad_lines_are_skipped() {
         let words = NextWords::parse("je\tsuis ne\nbad line\n");
         assert_eq!(words.after("je"), ["suis", "ne"]);
-        assert!(words.after("bad line").is_empty());
+        assert_eq!(words.after("bad line"), [] as [std::string::String; 0]);
     }
 }

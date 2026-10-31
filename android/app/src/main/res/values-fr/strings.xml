@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="recents">Récents</string>
+    <string name="search">Rechercher</string>
+    <string name="setup">Mise en route</string>
+    <string name="enable">1. Activer Synthboard</string>
+    <string name="choose">2. Choisir Synthboard</string>
+    <string name="typing">Saisie</string>
+    <string name="haptics">Vibration des touches</string>
+    <string name="trail">Ligne du swipe</string>
+    <string name="height">Hauteur du clavier : %1$d %%</string>
+    <string name="learned">Ce que le clavier a appris</string>
+    <string name="export">Exporter mes mots</string>
+    <string name="erase">Tout effacer</string>
+    <string name="erased">Effacé. Le clavier repart de zéro à sa prochaine ouverture.</string>
+    <string name="development">Développement</string>
+    <string name="send_traces">Envoyer mes traces</string>
+    <string name="no_tailscale">Tailscale n’est pas disponible.</string>
+    <string name="forget">Oublier « %1$s »</string>
+</resources>

@@ -46,7 +46,17 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         strokeWidth = ICON_STROKE_DP * density
     }
     private val rect = RectF()
-    private val emojiGrid = EmojiGrid(context, density, textColor, functionColor, pressedColor, ::invalidate, ::fromPanel)
+    private val emojiGrid = EmojiGrid(
+        context,
+        density,
+        textColor,
+        functionColor,
+        pressedColor,
+        context.getString(R.string.recents),
+        context.getString(R.string.search),
+        ::invalidate,
+        ::fromPanel,
+    )
 
     private var panelOpen = false
     private var searching = false
@@ -93,6 +103,12 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
 
     fun setPopup(command: Command.Popup) {
         popup = command.takeIf { it.items.isNotEmpty() }
+        invalidate()
+    }
+
+    fun setForgetBubble(command: Command.ForgetBubble) {
+        val label = context.getString(R.string.forget, command.word)
+        popup = Command.Popup(command.x, 0f, command.width, 0, listOf(label))
         invalidate()
     }
 

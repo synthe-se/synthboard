@@ -33,6 +33,7 @@ fn parse_lexicon(bytes: &[u8]) -> Lexicon {
 
 #[export]
 impl Keyboard {
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         Self { engine: Mutex::new(Engine::new()) }
     }

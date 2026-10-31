@@ -78,7 +78,7 @@ class SynthboardService : InputMethodService() {
     /** The local gesture trace, written by debug builds only. */
     private fun traceFile(): File? =
         memoryFile()?.takeIf { applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0 }
-            ?.let { File(filesDir, "traces.tsv") }
+            ?.let { File(filesDir, TraceProvider.FILE) }
 
     /** What was learned. Only reachable once the user has unlocked the phone. */
     private fun memoryFile(): File? =
@@ -150,6 +150,7 @@ class SynthboardService : InputMethodService() {
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         applySettings()
+        traceFile()?.appendText("S\t${System.currentTimeMillis() / 1000}\n")
         val field = Field(info.inputType.toUInt(), info.imeOptions.toUInt())
         send(Event.Shown(field, textBeforeCursor(), info.initialSelEnd.coerceAtLeast(0).toUInt()))
     }
@@ -187,6 +188,7 @@ class SynthboardService : InputMethodService() {
                 is Command.Keys -> view?.setKeys(command.height, command.barHeight, command.keys)
                 is Command.Look -> view?.setLook(command.pressed, command.shift.toInt())
                 is Command.Popup -> view?.setPopup(command)
+                is Command.ForgetBubble -> view?.setForgetBubble(command)
                 is Command.Suggestions -> view?.setSuggestions(command)
                 is Command.RequestContext -> wantsContext = true
                 is Command.Trail -> view?.setTrail(command.on)

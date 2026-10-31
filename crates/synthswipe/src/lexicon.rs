@@ -246,14 +246,13 @@ impl Lexicon {
                 }
                 continue;
             }
-            if step.next_tap > 0 {
-                if let Some(extra_cost) = cost(step.node.letter, step.next_tap) {
+            if step.next_tap > 0
+                && let Some(extra_cost) = cost(step.node.letter, step.next_tap) {
                     let spent = step.spent + extra_cost;
                     if spent <= max_cost {
                         stack.push(TapStep { next_tap: step.next_tap + 1, spent, ..step });
                     }
                 }
-            }
             for node in self.children(step.node) {
                 if let Some(extra_cost) = cost(node.letter, step.next_tap) {
                     let spent = step.spent + extra_cost;

@@ -267,7 +267,7 @@ enum Touch {
     Forget { word: String },
     Key { key: usize, down: (f32, f32), slop: f32, path: Vec<Sample>, start: u64 },
     Gesture { path: Vec<Sample>, start: u64 },
-    Popup { key: usize, items: Vec<String>, selected: Option<usize>, x: f32, y: f32, path: Vec<Sample>, start: u64, down_y: f32 },
+    Popup { items: Vec<String>, selected: Option<usize>, x: f32, y: f32, path: Vec<Sample>, start: u64, down_y: f32 },
     Cursor { anchor: f32 },
     Repeat { count: u32 },
     DeleteSwipe { anchor: f32, words: u32, base_cursor: u32 },
@@ -327,6 +327,37 @@ pub struct Engine {
 
 fn utf16_len(text: &str) -> u32 {
     u32::try_from(text.encode_utf16().count()).unwrap_or(u32::MAX)
+}
+
+/// How far a finger must travel to start a gesture, in key widths. Right after
+/// a tap the finger is still typing, so a swipe needs more room (G-3). `since`
+/// is the time since the last tap, if there was one.
+fn gesture_slop(since: Option<u64>) -> f32 {
+    match since {
+        Some(elapsed) if elapsed < FAST_TAP_MS => {
+            let ratio = (elapsed as f32 / FAST_TAP_SPAN_MS).min(1.0);
+            FAST_TAP_SLOP_KEYS + (SLOP_KEYS - FAST_TAP_SLOP_KEYS) * ratio
+        }
+        _ => SLOP_KEYS,
+    }
+}
+
+/// Writes `word` in the same case as `model`.
+fn case_like(word: &str, model: &str) -> String {
+    let capitalised = model.chars().next().is_some_and(char::is_uppercase);
+    let all_upper = model.chars().count() > 1 && model.chars().all(|c| !c.is_lowercase());
+    if all_upper {
+        word.to_uppercase()
+    } else if capitalised {
+        title_case(word)
+    } else {
+        word.to_owned()
+    }
+}
+
+fn sample_at(x: f32, y: f32, t: u64, start: u64) -> Sample {
+    let t_ms = u32::try_from(t.saturating_sub(start)).unwrap_or(u32::MAX);
+    Sample { x, y, t_ms }
 }
 
 fn title_case(word: &str) -> String {
@@ -579,9 +610,7 @@ impl Engine {
                 }
             }
             Event::Memory { text } => {
-                let lexicon = self.lexicon.clone();
-                let known = |word: &str| lexicon.as_ref().is_some_and(|words| words.contains(word));
-                self.memory = Arc::new(Memory::parse(&text, known));
+                self.memory = Arc::new(Memory::parse(&text, self.known()));
             }
             Event::OpenEmojiSearch => self.open_search(),
             Event::CloseEmojiPanel => self.search = None,
@@ -717,13 +746,18 @@ impl Engine {
         tokens(&tail).pop().unwrap_or_else(|| SENTENCE_START.to_owned())
     }
 
+    /// Asks whether the lexicon has a word, independently of the engine.
+    fn known(&self) -> impl Fn(&str) -> bool + use<> {
+        let lexicon = self.lexicon.clone();
+        move |word| lexicon.as_ref().is_some_and(|words| words.contains(word))
+    }
+
     /// Learns the waiting word, now that it was kept.
     fn confirm_pending(&mut self) {
         let Some((previous, word)) = self.pending.take() else {
             return;
         };
-        let lexicon = self.lexicon.clone();
-        let known = |candidate: &str| lexicon.as_ref().is_some_and(|words| words.contains(candidate));
+        let known = self.known();
         Arc::make_mut(&mut self.memory).learn(&previous, &word, known);
         self.memory_changed = true;
     }
@@ -756,6 +790,7 @@ impl Engine {
     fn remember(&mut self, previous: String, word: &str) {
         self.update_leaning(word);
         if let Some(failed) = self.failed_gesture.take() {
+            self.trace(format!("F\t{word}"));
             self.teach(word, &failed);
         }
         self.confirm_pending();
@@ -875,13 +910,7 @@ impl Engine {
             _ => None,
         };
         let width = self.board.as_ref().map_or(1.0, |board| board.key_width);
-        let elapsed = self.last_up.map_or(u64::MAX, |last| t.saturating_sub(last));
-        let slop = if elapsed < FAST_TAP_MS {
-            let ratio = (elapsed as f32 / FAST_TAP_SPAN_MS).min(1.0);
-            (FAST_TAP_SLOP_KEYS + (SLOP_KEYS - FAST_TAP_SLOP_KEYS) * ratio) * width
-        } else {
-            SLOP_KEYS * width
-        };
+        let slop = gesture_slop(self.last_up.map(|last| t.saturating_sub(last))) * width;
         self.touch = Touch::Key {
             key,
             down: (x, y),
@@ -904,96 +933,9 @@ impl Engine {
 
     fn moved(&mut self, x: f32, y: f32, t: u64) {
         let density = self.density;
-        let cursor = self.cursor;
-        let width = self.board.as_ref().map_or(1.0, |board| board.key_width);
-        let fast = self.last_up.is_some_and(|last| t.saturating_sub(last) < FAST_TAP_MS);
-        let can_gesture = self.layer == Layer::Alpha && self.field.allows_gestures();
         match &mut self.touch {
-            Touch::Key { key, down, slop, path, start } => {
-                let elapsed = u32::try_from(t.saturating_sub(*start)).unwrap_or(u32::MAX);
-                path.push(Sample { x, y, t_ms: elapsed });
-                let (dx, dy) = (x - down.0, y - down.1);
-                let travel = dx.hypot(dy);
-                let key = *key;
-                let start = *start;
-                let (anchor_x, slop) = (down.0, *slop);
-                let action = self.board.as_ref().and_then(|b| b.keys.get(key)).map(|k| k.action.clone());
-                match action {
-                    Some(Action::Space) => {
-                        let threshold = if fast { FAST_CURSOR_DP } else { CURSOR_STEP_DP } * density;
-                        if dx.abs() >= threshold {
-                            self.touch = Touch::Cursor { anchor: anchor_x };
-                            self.deadline = None;
-                            self.press(-1);
-                            self.spacing = Spacing::None;
-                            self.last_word = None;
-                        }
-                    }
-                    Some(Action::Delete) => {
-                        if -dx >= DELETE_SWIPE_DP * density {
-                            self.touch = Touch::DeleteSwipe { anchor: anchor_x, words: 0, base_cursor: cursor };
-                            self.deadline = None;
-                        }
-                    }
-                    Some(Action::Text(text)) if can_gesture && text.chars().all(char::is_alphabetic) => {
-                        if travel >= slop {
-                            let Touch::Key { path, .. } = std::mem::replace(&mut self.touch, Touch::Idle) else {
-                                return;
-                            };
-                            self.begin_gesture(path, start);
-                        }
-                    }
-                    _ => {}
-                }
-                let _ = width;
-            }
-            Touch::Gesture { path, start } => {
-                let elapsed = u32::try_from(t.saturating_sub(*start)).unwrap_or(u32::MAX);
-                path.push(Sample { x, y, t_ms: elapsed });
-            }
-            Touch::Popup { items, selected, x: popup_x, y: popup_y, path, start, down_y, .. } => {
-                let elapsed = u32::try_from(t.saturating_sub(*start)).unwrap_or(u32::MAX);
-                path.push(Sample { x, y, t_ms: elapsed });
-                let item = POPUP_ITEM_DP * density;
-                let band = POPUP_BAND_DP * density;
-                let count = items.len() as f32;
-                let inside_x = x >= *popup_x - band && x <= *popup_x + item * count + band;
-                let inside_y = y <= *down_y + band;
-                // A digit-only bubble has nothing to slide to, so any real
-                // travel means the finger was starting a gesture (A-9).
-                let dx = path.first().map_or(0.0, |first| x - first.x);
-                let dy = path.first().map_or(0.0, |first| y - first.y);
-                let lone_item_left = items.len() == 1 && dx.hypot(dy) >= SLOP_KEYS * width;
-                let moved_item = if lone_item_left {
-                    None
-                } else if inside_x && inside_y {
-                    Some((((x - *popup_x) / item).floor().max(0.0) as usize).min(items.len().saturating_sub(1)))
-                } else {
-                    None
-                };
-                let (popup_x, popup_y) = (*popup_x, *popup_y);
-                let items_now = items.clone();
-                let was = *selected;
-                let reached_other = was.is_some_and(|index| index != 0);
-                if moved_item.is_none() && !reached_other && can_gesture {
-                    // Slow-start rescue: the finger left, so this was a gesture (A-9).
-                    let Touch::Popup { path, start, .. } = std::mem::replace(&mut self.touch, Touch::Idle) else {
-                        return;
-                    };
-                    self.hide_popup();
-                    self.begin_gesture(path, start);
-                    return;
-                }
-                if was != moved_item {
-                    *selected = moved_item;
-                    self.out.push(Command::Popup {
-                        x: popup_x,
-                        y: popup_y,
-                        item_width: item,
-                        selected: moved_item.map_or(-1, |index| i32::try_from(index).unwrap_or(-1)),
-                        items: items_now,
-                    });
-                }
+            Touch::Key { path, start, .. } | Touch::Popup { path, start, .. } | Touch::Gesture { path, start } => {
+                path.push(sample_at(x, y, t, *start));
             }
             Touch::Cursor { anchor } => {
                 let step = CURSOR_STEP_DP * density;
@@ -1004,15 +946,101 @@ impl Engine {
                 }
             }
             Touch::DeleteSwipe { anchor, words, base_cursor } => {
-                let wanted = ((*anchor - x) - DELETE_SWIPE_DP * density).max(0.0) / (DELETE_WORD_DP * density);
-                let wanted = wanted as u32 + 1;
+                let travel = ((*anchor - x) - DELETE_SWIPE_DP * density).max(0.0);
+                let wanted = (travel / (DELETE_WORD_DP * density)) as u32 + 1;
                 if wanted != *words {
                     *words = wanted;
-                    let (wanted, base) = (wanted, *base_cursor);
+                    let base = *base_cursor;
                     self.select_words(wanted, base);
                 }
             }
-            Touch::ShiftDrag { .. } | Touch::Idle | Touch::Bar { .. } | Touch::SearchRow { .. } | Touch::Forget { .. } | Touch::Repeat { .. } => {}
+            Touch::ShiftDrag { .. }
+            | Touch::Idle
+            | Touch::Bar { .. }
+            | Touch::SearchRow { .. }
+            | Touch::Forget { .. }
+            | Touch::Repeat { .. } => {}
+        }
+        match self.touch {
+            Touch::Key { .. } => self.moved_on_key(x, y, t),
+            Touch::Popup { .. } => self.moved_in_popup(x, y),
+            _ => {}
+        }
+    }
+
+    fn can_gesture(&self) -> bool {
+        self.layer == Layer::Alpha && self.field.allows_gestures()
+    }
+
+    /// Decides what a finger still on its first key has become.
+    fn moved_on_key(&mut self, x: f32, y: f32, t: u64) {
+        let Touch::Key { key, down, slop, start, .. } = self.touch else {
+            return;
+        };
+        let (dx, dy) = (x - down.0, y - down.1);
+        let fast = self.last_up.is_some_and(|last| t.saturating_sub(last) < FAST_TAP_MS);
+        match self.key(key).map(|k| k.action.clone()) {
+            Some(Action::Space) => {
+                let threshold = if fast { FAST_CURSOR_DP } else { CURSOR_STEP_DP } * self.density;
+                if dx.abs() >= threshold {
+                    self.touch = Touch::Cursor { anchor: down.0 };
+                    self.deadline = None;
+                    self.press(-1);
+                    self.spacing = Spacing::None;
+                    self.last_word = None;
+                }
+            }
+            Some(Action::Delete) => {
+                if -dx >= DELETE_SWIPE_DP * self.density {
+                    self.touch = Touch::DeleteSwipe { anchor: down.0, words: 0, base_cursor: self.cursor };
+                    self.deadline = None;
+                }
+            }
+            Some(Action::Text(text))
+                if self.can_gesture() && text.chars().all(char::is_alphabetic) && dx.hypot(dy) >= slop =>
+            {
+                if let Touch::Key { path, .. } = std::mem::replace(&mut self.touch, Touch::Idle) {
+                    self.begin_gesture(path, start);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Follows the finger along an open popup, or rescues a slow start (A-9).
+    fn moved_in_popup(&mut self, x: f32, y: f32) {
+        let can_gesture = self.can_gesture();
+        let slop = SLOP_KEYS * self.board.as_ref().map_or(1.0, |board| board.key_width);
+        let item = POPUP_ITEM_DP * self.density;
+        let band = POPUP_BAND_DP * self.density;
+        let Touch::Popup { items, selected, x: popup_x, y: popup_y, path, down_y, .. } = &mut self.touch else {
+            return;
+        };
+        let count = items.len() as f32;
+        let inside = x >= *popup_x - band && x <= *popup_x + item * count + band && y <= *down_y + band;
+        // A digit-only bubble has nothing to slide to, so any real travel means
+        // the finger was starting a gesture.
+        let travel = path.first().map_or(0.0, |first| (x - first.x).hypot(y - first.y));
+        let left_lone_item = items.len() == 1 && travel >= slop;
+        let hovered = (inside && !left_lone_item)
+            .then(|| (((x - *popup_x) / item).floor().max(0.0) as usize).min(items.len().saturating_sub(1)));
+        if hovered.is_none() && !selected.is_some_and(|index| index != 0) && can_gesture {
+            if let Touch::Popup { path, start, .. } = std::mem::replace(&mut self.touch, Touch::Idle) {
+                self.hide_popup();
+                self.begin_gesture(path, start);
+            }
+            return;
+        }
+        if *selected != hovered {
+            *selected = hovered;
+            let command = Command::Popup {
+                x: *popup_x,
+                y: *popup_y,
+                item_width: item,
+                selected: hovered.map_or(-1, |index| i32::try_from(index).unwrap_or(-1)),
+                items: items.clone(),
+            };
+            self.out.push(command);
         }
     }
 
@@ -1036,11 +1064,10 @@ impl Engine {
                 self.out.push(Command::Trail { on: false });
                 self.finish_gesture(&path);
             }
-            Touch::Popup { items, selected, key, .. } => {
+            Touch::Popup { items, selected, .. } => {
                 self.hide_popup();
                 if let Some(text) = selected.and_then(|index| items.into_iter().nth(index)) {
                     self.type_text(&text);
-                    let _ = key;
                 }
             }
             Touch::Bar { x } => self.tap_suggestion(x),
@@ -1119,15 +1146,12 @@ impl Engine {
             Touch::Bar { x } => {
                 let x = *x;
                 if let Some(word) = self.slot_word(x) {
-                    let item_width = self.width / 2.0;
-                    let label = format!("Oublier « {word} »");
+                    let width = self.width / 2.0;
                     self.out.push(Command::Vibrate { kind: Haptic::LongPress });
-                    self.out.push(Command::Popup {
-                        x: (x - item_width / 2.0).clamp(0.0, self.width - item_width),
-                        y: 0.0,
-                        item_width,
-                        selected: 0,
-                        items: vec![label],
+                    self.out.push(Command::ForgetBubble {
+                        x: (x - width / 2.0).clamp(0.0, self.width - width),
+                        width,
+                        word: word.clone(),
                     });
                     self.touch = Touch::Forget { word };
                 }
@@ -1175,7 +1199,7 @@ impl Engine {
         let y = (top - POPUP_LIFT_DP * self.density).max(0.0);
         self.out.push(Command::Vibrate { kind: Haptic::LongPress });
         self.out.push(Command::Popup { x, y, item_width: item, selected: 0, items: items.clone() });
-        self.touch = Touch::Popup { key, items, selected: Some(0), x, y, path, start, down_y: down.1 };
+        self.touch = Touch::Popup { items, selected: Some(0), x, y, path, start, down_y: down.1 };
     }
 
     fn tap(&mut self, key: usize, down: (f32, f32), t: u64) {
@@ -1391,9 +1415,9 @@ impl Engine {
         let mut offered: Vec<String> = self
             .corrections(&typing)
             .into_iter()
-            .map(|(word, _, _)| self.apply_case_keep(&word, &typing.text))
+            .map(|(word, _, _)| case_like(&word, &typing.text))
             .collect();
-        if !offered.iter().any(|word| *word == typing.text) && !self.is_valid_word(&typing.text) {
+        if !offered.contains(&typing.text) && !self.is_valid_word(&typing.text) {
             offered.insert(1.min(offered.len()), typing.text.clone());
         }
         offered.truncate(3);
@@ -1434,7 +1458,7 @@ impl Engine {
             .into_iter()
             .find(|(_, cost, complete)| *complete && *cost <= AUTOCORRECT_COST);
         if let Some((word, _, _)) = best {
-            let written = self.apply_case_keep(&word, &typing.text);
+            let written = case_like(&word, &typing.text);
             self.delete_units(utf16_len(&typing.text));
             self.insert_text(&written);
             let previous = self.token_before(&written);
@@ -1546,8 +1570,8 @@ impl Engine {
             return;
         }
         self.pending = None;
-        if let Some(word) = self.last_word.take() {
-            if self.before.ends_with(&word.text) {
+        if let Some(word) = self.last_word.take()
+            && self.before.ends_with(&word.text) {
                 self.trace("D".to_owned());
                 self.failed_gesture = Some(word.gesture.clone()).filter(|gesture| !gesture.is_empty());
                 // Backspace after a swipe removes the whole word (B-7).
@@ -1557,7 +1581,6 @@ impl Engine {
                 self.refresh_shift();
                 return;
             }
-        }
         let typing = self.typing.take().map(|mut typing| {
             typing.text.pop();
             typing.taps.pop();
@@ -1695,12 +1718,12 @@ impl Engine {
             return;
         };
         let points: Vec<String> = path.iter().map(|p| format!("{:.0},{:.0},{}", p.x, p.y, p.t_ms)).collect();
-        self.trace(format!("G\t{first}\t{}\t{}", words.join(","), points.join(" ")));
+        self.trace(format!("G\t{first}\t{}\t{}\t{}", words.join(","), points.join(" "), self.history("").join(" ")));
         if self.search_input(&first) {
             return;
         }
         let cased = self.apply_case(&first);
-        let alternatives: Vec<String> = words.iter().skip(1).map(|word| self.apply_case_keep(word, &cased)).collect();
+        let alternatives: Vec<String> = words.iter().skip(1).map(|word| case_like(word, &cased)).collect();
         self.commit_word(cased, alternatives);
         if let Some(word) = self.last_word.as_mut() {
             word.gesture = path.to_vec();
@@ -1735,18 +1758,6 @@ impl Engine {
         cased(self.shift, word)
     }
 
-    fn apply_case_keep(&self, word: &str, model: &str) -> String {
-        let capitalised = model.chars().next().is_some_and(char::is_uppercase);
-        let all_upper = model.chars().count() > 1 && model.chars().all(|c| !c.is_lowercase());
-        if all_upper {
-            word.to_uppercase()
-        } else if capitalised {
-            title_case(word)
-        } else {
-            word.to_owned()
-        }
-    }
-
     fn show_alternatives(&mut self, alternatives: &[String]) {
         let slot = |index: usize| alternatives.get(index).cloned().unwrap_or_default();
         self.out.push(Command::Suggestions { center: slot(0), left: slot(1), right: slot(2) });
@@ -1778,8 +1789,7 @@ impl Engine {
     }
 
     fn forget(&mut self, word: &str) {
-        let lexicon = self.lexicon.clone();
-        let known = |candidate: &str| lexicon.as_ref().is_some_and(|words| words.contains(candidate));
+        let known = self.known();
         Arc::make_mut(&mut self.memory).forget(word, known);
         self.memory_changed = true;
         self.save_memory();
@@ -2083,7 +2093,7 @@ mod tests {
         let (ox, oy) = rig.center("o");
         let t = rig.t + 700;
         rig.send(Event::Down { pointer: 0, x, y, t });
-        assert!(popup_of("b").is_empty());
+        assert_eq!(popup_of("b"), [] as [std::string::String; 0]);
         let (ax, ay) = rig.center("e");
         rig.send(Event::Up { pointer: 0, x, y, t: t + 10 });
         rig.text.clear();
@@ -2322,8 +2332,8 @@ mod tests {
         rig.swipe("bonsoir");
         rig.send(Event::Text { text: "🍕".to_owned() });
         rig.send(Event::ForgetAll);
-        assert!(rig.engine.memory.to_text().is_empty());
-        assert!(rig.engine.recents.is_empty());
+        assert_eq!(rig.engine.memory.to_text(), "");
+        assert_eq!(rig.engine.recents, [] as [std::string::String; 0]);
     }
 
     #[test]
@@ -2367,6 +2377,20 @@ mod tests {
     }
 
     #[test]
+    fn the_trace_names_the_word_a_deleted_gesture_meant() {
+        let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
+        rig.send(Event::EnableTraces);
+        rig.swipe("bonjour");
+        rig.tap("⌫");
+        type_word(&mut rig, "zxcv");
+        let (x, y) = rig.space();
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        let step = rig.send(Event::Up { pointer: 0, x, y, t: t + 30 });
+        assert!(step.commands.iter().any(|c| matches!(c, Command::Trace { line } if line == "F\tzxcv")));
+    }
+
+    #[test]
     fn a_word_picked_from_the_bar_owns_that_gesture() {
         let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
         rig.swipe("ou");
@@ -2399,12 +2423,413 @@ mod tests {
         assert!(step.commands.iter().any(|c| matches!(c, Command::SaveMemory { text } if text.contains('~'))));
     }
 
+    fn plain_rig() -> Rig {
+        Rig::new(Field { input_type: android::CLASS_TEXT, ime_options: 0 })
+    }
+
+    fn rig_with_text(before: &str) -> Rig {
+        let mut rig = plain_rig();
+        let cursor = utf16_len(before);
+        rig.send(Event::Shown {
+            field: Field { input_type: android::CLASS_TEXT, ime_options: 0 },
+            before: before.to_owned(),
+            cursor,
+        });
+        rig.text = before.to_owned();
+        rig
+    }
+
+    fn selects(step: &Step, start: u32, end: u32) -> bool {
+        step.commands.contains(&Command::Select { start, end })
+    }
+
+    #[test]
+    fn dragging_space_left_moves_by_grapheme_and_ignores_small_moves() {
+        let mut rig = rig_with_text("abc");
+        let (x, y) = rig.space();
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        let step = rig.send(Event::Move { pointer: 0, x: x - 10.0, y, t: t + 10 });
+        assert!(!step.commands.iter().any(|c| matches!(c, Command::Select { .. })));
+        rig.send(Event::Move { pointer: 0, x: x - 30.0, y, t: t + 20 });
+        let step = rig.send(Event::Move { pointer: 0, x: x - 60.0, y, t: t + 30 });
+        assert!(selects(&step, 1, 1), "{:?}", step.commands);
+        rig.send(Event::Up { pointer: 0, x: x - 60.0, y, t: t + 40 });
+        assert_eq!(rig.text, "abc");
+    }
+
+    #[test]
+    fn a_cursor_drag_steps_over_a_whole_emoji() {
+        let mut rig = rig_with_text("a👍🏽");
+        let (x, y) = rig.space();
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        rig.send(Event::Move { pointer: 0, x: x - 30.0, y, t: t + 20 });
+        let step = rig.send(Event::Move { pointer: 0, x: x - 40.0, y, t: t + 30 });
+        assert!(selects(&step, 1, 1), "{:?}", step.commands);
+    }
+
+    #[test]
+    fn the_gesture_threshold_relaxes_after_a_tap() {
+        let close = |a: f32, b: f32| (a - b).abs() < 0.001;
+        assert!(close(gesture_slop(None), SLOP_KEYS));
+        assert!(close(gesture_slop(Some(0)), FAST_TAP_SLOP_KEYS));
+        assert!(close(gesture_slop(Some(225)), FAST_TAP_SLOP_KEYS.midpoint(SLOP_KEYS)));
+        assert!(close(gesture_slop(Some(450)), SLOP_KEYS));
+        assert!(close(gesture_slop(Some(FAST_TAP_MS - 1)), SLOP_KEYS));
+        assert!(close(gesture_slop(Some(FAST_TAP_MS)), SLOP_KEYS));
+        assert!(close(gesture_slop(Some(10_000)), SLOP_KEYS));
+    }
+
+    #[test]
+    fn a_long_cursor_drag_keeps_counting_from_where_it_stood() {
+        let mut rig = rig_with_text("abcdef");
+        let (x, y) = rig.space();
+        let step_px = CURSOR_STEP_DP * DENSITY;
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        rig.send(Event::Move { pointer: 0, x: x - step_px - 1.0, y, t: t + 10 });
+        let first = rig.send(Event::Move { pointer: 0, x: x - step_px * 2.0 - 1.0, y, t: t + 20 });
+        assert!(selects(&first, 4, 4), "{:?}", first.commands);
+        rig.send(Event::Selection { start: 4, end: 4 });
+        let none = rig.send(Event::Move { pointer: 0, x: x - step_px * 2.0 - 2.0, y, t: t + 30 });
+        assert!(!none.commands.iter().any(|c| matches!(c, Command::Select { .. })));
+        let next = rig.send(Event::Move { pointer: 0, x: x - step_px * 3.0 - 1.0, y, t: t + 40 });
+        assert!(selects(&next, 3, 3), "{:?}", next.commands);
+    }
+
+    #[test]
+    fn delete_drag_counts_whole_word_steps_and_shrinks_back() {
+        let mut rig = rig_with_text("une deux trois");
+        let (x, y) = rig.center("⌫");
+        let (start, word) = (DELETE_SWIPE_DP * DENSITY, DELETE_WORD_DP * DENSITY);
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        rig.send(Event::Move { pointer: 0, x: x - start - 1.0, y, t: t + 10 });
+        let one = rig.send(Event::Move { pointer: 0, x: x - start - 2.0, y, t: t + 20 });
+        assert!(selects(&one, 9, 14), "{:?}", one.commands);
+        let same = rig.send(Event::Move { pointer: 0, x: x - start - word + 4.0, y, t: t + 30 });
+        assert!(!same.commands.iter().any(|c| matches!(c, Command::Select { .. })));
+        let two = rig.send(Event::Move { pointer: 0, x: x - start - word - 1.0, y, t: t + 40 });
+        assert!(selects(&two, 4, 14), "{:?}", two.commands);
+        let back = rig.send(Event::Move { pointer: 0, x: x - start - 2.0, y, t: t + 50 });
+        assert!(selects(&back, 9, 14), "{:?}", back.commands);
+    }
+
+    #[test]
+    fn a_gesture_needs_the_full_slop_and_not_a_pixel_less() {
+        let mut rig = plain_rig();
+        let (x, y) = rig.center("s");
+        let width = rig.engine.board.as_ref().unwrap().key_width;
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        let short = rig.send(Event::Move { pointer: 0, x: x + width * SLOP_KEYS - 1.0, y, t: t + 20 });
+        assert!(!short.commands.contains(&Command::Trail { on: true }));
+        let far = rig.send(Event::Move { pointer: 0, x: x + width * SLOP_KEYS + 1.0, y, t: t + 40 });
+        assert!(far.commands.contains(&Command::Trail { on: true }));
+    }
+
+    #[test]
+    fn dragging_space_right_moves_forward() {
+        let mut rig = rig_with_text("abc");
+        let (x, y) = rig.space();
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        rig.send(Event::Move { pointer: 0, x: x + 30.0, y, t: t + 20 });
+        let step = rig.send(Event::Move { pointer: 0, x: x + 60.0, y, t: t + 30 });
+        assert!(selects(&step, 5, 5), "{:?}", step.commands);
+    }
+
+    #[test]
+    fn right_after_a_tap_the_space_bar_needs_a_longer_drag() {
+        let mut rig = plain_rig();
+        rig.tap("a");
+        let (x, y) = rig.space();
+        let t = rig.t + 140;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        rig.send(Event::Move { pointer: 0, x: x - 40.0, y, t: t + 10 });
+        assert!(matches!(rig.engine.touch, Touch::Key { .. }));
+        rig.send(Event::Move { pointer: 0, x: x - 70.0, y, t: t + 20 });
+        assert!(matches!(rig.engine.touch, Touch::Cursor { .. }));
+    }
+
+    #[test]
+    fn dragging_delete_selects_words_and_lifting_deletes_them() {
+        let mut rig = rig_with_text("une deux trois");
+        let (x, y) = rig.center("⌫");
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        rig.send(Event::Move { pointer: 0, x: x - 44.0, y, t: t + 10 });
+        let step = rig.send(Event::Move { pointer: 0, x: x - 50.0, y, t: t + 20 });
+        assert!(selects(&step, 9, 14), "{:?}", step.commands);
+        let step = rig.send(Event::Move { pointer: 0, x: x - 110.0, y, t: t + 30 });
+        assert!(selects(&step, 4, 14), "{:?}", step.commands);
+        let step = rig.send(Event::Up { pointer: 0, x: x - 110.0, y, t: t + 40 });
+        assert!(step.commands.contains(&Command::DeleteSelection));
+        assert!(step.commands.contains(&Command::RequestContext));
+    }
+
+    #[test]
+    fn a_small_drag_on_delete_stays_a_tap() {
+        let mut rig = rig_with_text("ab");
+        let (x, y) = rig.center("⌫");
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        rig.send(Event::Move { pointer: 0, x: x - 40.0, y, t: t + 10 });
+        rig.send(Event::Up { pointer: 0, x: x - 40.0, y, t: t + 20 });
+        assert_eq!(rig.text, "a");
+    }
+
+    #[test]
+    fn each_key_arms_its_own_deadline() {
+        let mut rig = plain_rig();
+        let t = rig.t + 700;
+        let due = |rig: &mut Rig, point: (f32, f32)| {
+            let step = rig.send(Event::Down { pointer: 0, x: point.0, y: point.1, t });
+            rig.send(Event::Cancel);
+            step.deadline
+        };
+        let (space, delete, shift, letter) =
+            (rig.space(), rig.center("⌫"), rig.center("⇧"), rig.center("a"));
+        assert_eq!(due(&mut rig, space), Some(t + MENU_PRESS_MS));
+        assert_eq!(due(&mut rig, delete), Some(t + DELETE_DELAY_MS));
+        assert_eq!(due(&mut rig, shift), Some(t + MENU_PRESS_MS));
+        assert_eq!(due(&mut rig, letter), Some(t + LONG_PRESS_MS));
+        let enter = rig.engine.board.as_ref().unwrap().keys.iter().find(|k| k.action == Action::Enter).unwrap().center();
+        assert_eq!(due(&mut rig, enter), None);
+    }
+
+    #[test]
+    fn an_early_deadline_does_nothing_and_a_late_one_fires() {
+        let mut rig = plain_rig();
+        let (x, y) = rig.center("e");
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        let early = rig.send(Event::Deadline { t: t + LONG_PRESS_MS - 1 });
+        assert!(!early.commands.iter().any(|c| matches!(c, Command::Popup { .. })));
+        assert_eq!(early.deadline, Some(t + LONG_PRESS_MS));
+        let late = rig.send(Event::Deadline { t: t + LONG_PRESS_MS + 5 });
+        assert!(late.commands.iter().any(|c| matches!(c, Command::Popup { .. })));
+    }
+
+    #[test]
+    fn holding_space_opens_the_picker_and_types_nothing() {
+        let mut rig = plain_rig();
+        let (x, y) = rig.space();
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        let step = rig.send(Event::Deadline { t: t + MENU_PRESS_MS });
+        assert!(step.commands.contains(&Command::Picker));
+        assert_eq!(step.deadline, None);
+        rig.send(Event::Up { pointer: 0, x, y, t: t + 600 });
+        assert_eq!(rig.text, "");
+    }
+
+    #[test]
+    fn holding_shift_locks_capitals() {
+        let mut rig = plain_rig();
+        let (x, y) = rig.center("⇧");
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        rig.send(Event::Deadline { t: t + MENU_PRESS_MS });
+        rig.send(Event::Up { pointer: 0, x, y, t: t + 600 });
+        assert_eq!(rig.engine.shift, Shift::Locked);
+        rig.tap("a");
+        rig.tap("z");
+        assert_eq!(rig.text, "AZ");
+        rig.tap("⇧");
+        rig.tap("a");
+        assert_eq!(rig.text, "AZa");
+    }
+
+    #[test]
+    fn one_shift_tap_lasts_one_letter() {
+        let mut rig = plain_rig();
+        rig.tap("⇧");
+        assert_eq!(rig.engine.shift, Shift::OneShot);
+        rig.tap("a");
+        rig.tap("z");
+        assert_eq!(rig.text, "Az");
+    }
+
+    #[test]
+    fn a_shifted_popup_offers_capitals() {
+        let mut rig = plain_rig();
+        rig.tap("⇧");
+        let (x, y) = rig.center("e");
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        let step = rig.send(Event::Deadline { t: t + LONG_PRESS_MS });
+        assert!(step.commands.iter().any(|c| matches!(c, Command::Popup { items, .. } if items[0] == "É")));
+    }
+
+    #[test]
+    fn the_popup_stays_on_screen_and_above_its_key() {
+        let mut rig = plain_rig();
+        let (x, y) = rig.center("p");
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        let step = rig.send(Event::Deadline { t: t + LONG_PRESS_MS });
+        let popup = step.commands.iter().find_map(|c| match c {
+            Command::Popup { x, y, item_width, items, .. } => Some((*x, *y, *item_width, items.len())),
+            _ => None,
+        });
+        let (left, top, width, count) = popup.unwrap();
+        assert!(left + width * count as f32 <= 1080.0 + 0.5);
+        assert!(top < y);
+        assert!(left >= 0.0);
+        let item = POPUP_ITEM_DP * DENSITY;
+        assert!((width - item).abs() < 0.01);
+    }
+
+    #[test]
+    fn leaving_a_popup_below_cancels_when_another_item_was_reached() {
+        let mut rig = plain_rig();
+        let (x, y) = rig.center("e");
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        rig.send(Event::Deadline { t: t + LONG_PRESS_MS });
+        let item = POPUP_ITEM_DP * DENSITY;
+        let step = rig.send(Event::Move { pointer: 0, x: x + item * 1.1, y, t: t + 400 });
+        assert!(step.commands.iter().any(|c| matches!(c, Command::Popup { selected: 1, .. })));
+        let below = y + POPUP_BAND_DP * DENSITY + 10.0;
+        let step = rig.send(Event::Move { pointer: 0, x: x + item * 1.1, y: below, t: t + 450 });
+        assert!(step.commands.iter().any(|c| matches!(c, Command::Popup { selected: -1, .. })));
+        rig.send(Event::Up { pointer: 0, x, y: below, t: t + 500 });
+        assert_eq!(rig.text, "");
+    }
+
+    #[test]
+    fn the_bar_has_three_slots_at_fixed_places() {
+        let rig = plain_rig();
+        assert_eq!(rig.engine.slot_at(0.0), 1);
+        assert_eq!(rig.engine.slot_at(1080.0 * 0.32 - 1.0), 1);
+        assert_eq!(rig.engine.slot_at(1080.0 * 0.32), 0);
+        assert_eq!(rig.engine.slot_at(1080.0 * 0.68 - 1.0), 0);
+        assert_eq!(rig.engine.slot_at(1080.0 * 0.68), 2);
+        assert!((rig.engine.bar_height() - BAR_DP * DENSITY).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_tap_in_the_bar_is_not_a_key() {
+        let mut rig = plain_rig();
+        rig.tap_at((100.0, BAR_DP * DENSITY - 1.0));
+        assert_eq!(rig.text, "");
+        rig.tap_at((100.0, BAR_DP * DENSITY + 1.0));
+        assert_eq!(rig.text.chars().count(), 1);
+    }
+
+    #[test]
+    fn moving_the_cursor_away_ends_the_word_in_progress() {
+        let mut rig = plain_rig();
+        type_word(&mut rig, "yha");
+        assert!(rig.engine.typing.is_some());
+        let step = rig.send(Event::Selection { start: 0, end: 0 });
+        assert!(rig.engine.typing.is_none());
+        assert!(step.commands.contains(&Command::RequestContext));
+    }
+
+    #[test]
+    fn the_keyboards_own_edits_are_not_taken_for_a_cursor_move() {
+        let mut rig = plain_rig();
+        type_word(&mut rig, "yha");
+        let step = rig.send(Event::Selection { start: 3, end: 3 });
+        assert!(rig.engine.typing.is_some());
+        assert!(!step.commands.contains(&Command::RequestContext));
+    }
+
+    #[test]
+    fn an_emptied_field_restarts_the_language_and_learns_the_last_word() {
+        let mut rig = plain_rig();
+        rig.engine.leaning = -2.0;
+        rig.swipe("bonjour");
+        rig.send(Event::Selection { start: 0, end: 0 });
+        assert!((rig.engine.leaning - LANGUAGE_START).abs() < f32::EPSILON);
+        assert!(rig.engine.memory.familiarity("bonjour") > 0.0);
+    }
+
+    #[test]
+    fn language_evidence_decays_and_stays_bounded() {
+        let mut rig = plain_rig();
+        rig.engine.set_lexicon(Arc::new(Lexicon::with_languages([("the", 180.0, ENGLISH), ("le", 180.0, FRENCH), ("x", 1.0, 3)])));
+        rig.engine.leaning = 1.0;
+        rig.engine.update_leaning("the");
+        assert!((rig.engine.leaning - (1.0 * LANGUAGE_MEMORY - 1.0)).abs() < 0.001);
+        rig.engine.leaning = 1.0;
+        rig.engine.update_leaning("x");
+        assert!((rig.engine.leaning - 1.0).abs() < f32::EPSILON);
+        for _ in 0..50 {
+            rig.engine.update_leaning("le");
+        }
+        assert!(rig.engine.leaning <= LANGUAGE_LIMIT);
+        for _ in 0..50 {
+            rig.engine.update_leaning("the");
+        }
+        assert!(rig.engine.leaning >= -LANGUAGE_LIMIT);
+    }
+
+    #[test]
+    fn the_language_tilt_only_moves_words_of_one_language() {
+        assert!(language_tilt(FRENCH, 2.0) > 0.0);
+        assert!(language_tilt(ENGLISH, 2.0) < 0.0);
+        assert!(language_tilt(FRENCH | ENGLISH, 2.0).abs() < f32::EPSILON);
+        assert!(language_tilt(0, 2.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn case_follows_the_model_word() {
+        assert_eq!(case_like("été", "été"), "été");
+        assert_eq!(case_like("été", "Bon"), "Été");
+        assert_eq!(case_like("été", "BON"), "ÉTÉ");
+        assert_eq!(case_like("été", "A"), "Été");
+    }
+
+    #[test]
+    fn every_function_key_has_its_icon() {
+        assert_eq!(icon_of(&Action::Shift), Icon::Shift);
+        assert_eq!(icon_of(&Action::Delete), Icon::Delete);
+        assert_eq!(icon_of(&Action::Enter), Icon::Enter);
+        assert_eq!(icon_of(&Action::Emoji), Icon::Emoji);
+        assert_eq!(icon_of(&Action::Space), Icon::None);
+    }
+
+    #[test]
+    fn the_search_cross_acts_only_at_the_right_end() {
+        let mut rig = plain_rig();
+        rig.send(Event::OpenEmojiSearch);
+        rig.tap("f");
+        rig.tap_at((100.0, -10.0));
+        assert_eq!(rig.engine.search.as_deref(), Some("f"));
+        rig.tap_at((1080.0 - BAR_DP * DENSITY + 1.0, -10.0));
+        assert_eq!(rig.engine.search.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn addresses_get_no_automatic_space() {
+        let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT | android::URI, ime_options: 0 });
+        assert!(!rig.engine.field.allows_auto_spacing());
+        rig.swipe("bonjour");
+        rig.swipe("bonsoir");
+        assert_eq!(rig.text, "bonjourbonsoir");
+    }
+
+    #[test]
+    fn only_a_real_change_of_shift_relabels_the_keys() {
+        let mut rig = plain_rig();
+        let step = rig.engine.step(Event::Hidden);
+        assert!(!step.commands.iter().any(|c| matches!(c, Command::Keys { .. })));
+        rig.tap("⇧");
+        let labels = rig.engine.step(Event::Resize { width: 1080.0, density: DENSITY });
+        let upper = labels.commands.iter().any(|c| matches!(c, Command::Keys { keys, .. } if keys.iter().any(|k| k.label == "A")));
+        assert!(upper);
+    }
+
     #[test]
     fn a_password_field_never_predicts() {
         let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT | android::PASSWORD, ime_options: 0 });
         rig.engine.set_language(Arc::new(Affinities::default()), Arc::new(Grammar::default()), Arc::new(NextWords::parse("<s>\tje\n")));
         rig.engine.clear_suggestions();
-        assert!(rig.engine.predictions.is_empty());
+        assert_eq!(rig.engine.predictions, [] as [std::string::String; 0]);
     }
 
     fn type_word(rig: &mut Rig, word: &str) {
@@ -2464,7 +2889,7 @@ mod tests {
         let t = rig.t + 700;
         rig.send(Event::Down { pointer: 0, x: 540.0, y: 10.0, t });
         let step = rig.send(Event::Deadline { t: t + LONG_PRESS_MS });
-        assert!(step.commands.iter().any(|c| matches!(c, Command::Popup { items, .. } if items[0].contains("je"))));
+        assert!(step.commands.iter().any(|c| matches!(c, Command::ForgetBubble { word, .. } if word == "je")));
         rig.send(Event::Up { pointer: 0, x: 540.0, y: 10.0, t: t + LONG_PRESS_MS + 50 });
         assert_eq!(rig.engine.predictions, ["the"]);
         assert_eq!(rig.text, "");
@@ -2519,17 +2944,17 @@ mod tests {
         rig.tap("⌫");
         rig.swipe("bonsoir");
         rig.swipe("été");
-        assert!(rig.engine.memory.next_after("<s>") == ["bonsoir"]);
+        assert_eq!(rig.engine.memory.next_after("<s>"), ["bonsoir"]);
     }
 
     #[test]
     fn a_no_learning_field_learns_nothing() {
-        let flags = android::CLASS_TEXT | 0;
+        let flags = android::CLASS_TEXT;
         let mut rig = Rig::new(Field { input_type: flags, ime_options: android::NO_PERSONALIZED_LEARNING });
         rig.swipe("bonjour");
         rig.swipe("bonsoir");
         rig.send(Event::Hidden);
-        assert!(rig.engine.memory.to_text().is_empty());
+        assert_eq!(rig.engine.memory.to_text(), "");
     }
 
     #[test]
@@ -2555,7 +2980,7 @@ mod tests {
     fn a_password_field_does_not_remember_emoji() {
         let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT | android::PASSWORD, ime_options: 0 });
         rig.send(Event::Text { text: "🍕".to_owned() });
-        assert!(rig.engine.recents.is_empty());
+        assert_eq!(rig.engine.recents, [] as [std::string::String; 0]);
     }
 
     #[test]

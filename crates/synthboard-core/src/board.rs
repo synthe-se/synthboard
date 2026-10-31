@@ -313,6 +313,17 @@ mod tests {
     }
 
     #[test]
+    fn inside_a_key_the_distance_is_zero_and_outside_it_grows() {
+        let key = Key { action: Action::Space, label: String::new(), x: 10.0, y: 20.0, width: 10.0, height: 20.0, hint: String::new() };
+        assert!(key.distance_squared(15.0, 30.0).abs() < f32::EPSILON);
+        assert!((key.distance_squared(7.0, 30.0) - 9.0).abs() < 0.001);
+        assert!((key.distance_squared(23.0, 30.0) - 9.0).abs() < 0.001);
+        assert!((key.distance_squared(15.0, 16.0) - 16.0).abs() < 0.001);
+        assert!((key.distance_squared(15.0, 44.0) - 16.0).abs() < 0.001);
+        assert_eq!(key.center(), (15.0, 30.0));
+    }
+
+    #[test]
     fn the_height_setting_scales_the_rows() {
         let tall = Board::new(Alphabet::Azerty, Layer::Alpha, Purpose::Text, 1080.0, 2.625, 1.2).height;
         let usual = Board::new(Alphabet::Azerty, Layer::Alpha, Purpose::Text, 1080.0, 2.625, 1.0).height;
@@ -331,6 +342,6 @@ mod tests {
     fn popups_come_from_data_and_ignore_case() {
         assert_eq!(popup_of("e").first().map(String::as_str), Some("é"));
         assert_eq!(popup_of("E").first().map(String::as_str), Some("é"));
-        assert!(popup_of("z").is_empty());
+        assert_eq!(popup_of("z"), [] as [std::string::String; 0]);
     }
 }

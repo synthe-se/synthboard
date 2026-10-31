@@ -151,6 +151,6 @@ mod tests {
 
     #[test]
     fn an_empty_query_finds_nothing() {
-        assert!(Catalog::parse(SAMPLE).search("  ").is_empty());
+        assert_eq!(Catalog::parse(SAMPLE).search("  "), [] as [std::string::String; 0]);
     }
 }

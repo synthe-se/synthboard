@@ -174,13 +174,21 @@ fn run_personal(text: &str, params: &Params, gestures: &[Gesture]) {
                     layout = Some(valid);
                 }
             }
-            ["G", word, _, points] => {
-                let next = lines.get(index + 1).copied().unwrap_or("");
-                let rejected = next == "D";
-                let truth = match next.split('\t').collect::<Vec<_>>().as_slice() {
-                    ["C", chosen] => (*chosen).to_lowercase(),
-                    _ => word.to_lowercase(),
-                };
+            ["G", word, _, points, ..] => {
+                let later = lines.iter().skip(index + 1).take_while(|line| !line.starts_with('G'));
+                let mut rejected = false;
+                let mut truth = word.to_lowercase();
+                for line in later {
+                    match line.split('\t').collect::<Vec<_>>().as_slice() {
+                        ["C", chosen] => truth = (*chosen).to_lowercase(),
+                        ["D"] => rejected = true,
+                        ["F", meant] => {
+                            truth = (*meant).to_lowercase();
+                            rejected = false;
+                        }
+                        _ => {}
+                    }
+                }
                 let samples: Vec<synthswipe::Sample> = points
                     .split(' ')
                     .filter_map(|point| {
@@ -195,8 +203,6 @@ fn run_personal(text: &str, params: &Params, gestures: &[Gesture]) {
                 let Some(layout) = &layout else { continue };
                 let ranked = decode_in_context(layout, &lexicon, &samples, params, 3, |_| 0.0).unwrap_or_default();
                 if rejected {
-                    let now: Vec<&str> = ranked.iter().map(|c| c.surface).collect();
-                    println!("rejected {word}, now {now:?}");
                     continue;
                 }
                 total += 1;
@@ -210,7 +216,10 @@ fn run_personal(text: &str, params: &Params, gestures: &[Gesture]) {
             _ => {}
         }
     }
-    println!("personal, no context: {hits}/{total} top-1; misses {misses:?}");
+    let mut worst: Vec<_> = misses.into_iter().collect();
+    worst.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+    worst.truncate(10);
+    println!("{hits}/{total} of your gestures read right, without context; still wrong: {worst:?}");
 }
 
 fn percent(hits: usize, total: usize) -> f64 {
@@ -300,6 +309,7 @@ const SLICES: [Slice; 5] = [
     ("9+ letters", |word| letters(word) >= 9),
 ];
 
+#[allow(clippy::too_many_lines)]
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut root = PathBuf::from("data/raw");
     let mut should_tune = false;

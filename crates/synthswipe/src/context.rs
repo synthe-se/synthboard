@@ -147,11 +147,10 @@ impl Affinities {
     #[must_use]
     pub fn from_bytes(bytes: &[u8]) -> Self {
         let mut table = Self::default();
-        for entry in bytes.chunks_exact(ENTRY_BYTES) {
-            if let [a, b, c, d, value] = *entry {
-                table.hashes.push(u32::from_le_bytes([a, b, c, d]));
-                table.values.push(i8::from_le_bytes([value]));
-            }
+        for entry in bytes.as_chunks::<ENTRY_BYTES>().0 {
+            let [a, b, c, d, value] = *entry;
+            table.hashes.push(u32::from_le_bytes([a, b, c, d]));
+            table.values.push(i8::from_le_bytes([value]));
         }
         table
     }

@@ -1,8 +1,10 @@
 package app.synthboard
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ApplicationInfo
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
@@ -14,6 +16,7 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import java.io.File
 
 /** Keys shared by the settings screen and the keyboard. */
@@ -52,9 +55,9 @@ class SettingsActivity : Activity() {
         learned()
     }
 
-    private fun heading(text: String) {
+    private fun heading(text: Int) {
         list.addView(TextView(this).apply {
-            this.text = text
+            setText(text)
             textSize = 15f
             setPadding(0, (20 * resources.displayMetrics.density).toInt(), 0, 8)
         })
@@ -65,23 +68,23 @@ class SettingsActivity : Activity() {
         val enabled = manager.enabledInputMethodList.any { it.packageName == packageName }
         val current = AndroidSettings.Secure.getString(contentResolver, AndroidSettings.Secure.DEFAULT_INPUT_METHOD)
         if (enabled && current.orEmpty().startsWith(packageName)) return
-        heading("Mise en route")
+        heading(R.string.setup)
         if (!enabled) {
-            action("1. Activer Synthboard") {
+            action(R.string.enable) {
                 startActivity(Intent(AndroidSettings.ACTION_INPUT_METHOD_SETTINGS))
             }
         } else {
-            action("2. Choisir Synthboard") { manager.showInputMethodPicker() }
+            action(R.string.choose) { manager.showInputMethodPicker() }
         }
     }
 
     private fun typing() {
-        heading("Saisie")
-        toggle("Vibration des touches", Settings.HAPTICS)
-        toggle("Ligne du swipe", Settings.TRAIL)
+        heading(R.string.typing)
+        toggle(R.string.haptics, Settings.HAPTICS)
+        toggle(R.string.trail, Settings.TRAIL)
         val label = TextView(this)
         fun show(percent: Int) {
-            label.text = "Hauteur du clavier : $percent %"
+            label.text = getString(R.string.height, percent)
         }
         show(store.getInt(Settings.HEIGHT, 100))
         list.addView(label)
@@ -101,8 +104,8 @@ class SettingsActivity : Activity() {
     }
 
     private fun learned() {
-        heading("Ce que le clavier a appris")
-        action("Exporter mes mots") {
+        heading(R.string.learned)
+        action(R.string.export) {
             startActivityForResult(
                 Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
                     .setType("text/tab-separated-values")
@@ -110,7 +113,29 @@ class SettingsActivity : Activity() {
                 EXPORT,
             )
         }
-        action("Tout effacer") { eraseEverything() }
+        action(R.string.erase) { eraseEverything() }
+        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            heading(R.string.development)
+            action(R.string.send_traces) { sendTraces() }
+        }
+    }
+
+    /**
+     * Hands the trace to Tailscale and no other app. The keyboard has no network
+     * access of its own: the file only moves on this tap, over the user's tailnet.
+     */
+    private fun sendTraces() {
+        val uri = Uri.Builder().scheme("content").authority(TraceProvider.AUTHORITY).path(TraceProvider.FILE).build()
+        val share = Intent(Intent.ACTION_SEND)
+            .setPackage(TAILSCALE)
+            .setType(TraceProvider.TYPE)
+            .putExtra(Intent.EXTRA_STREAM, uri)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            startActivity(share)
+        } catch (_: ActivityNotFoundException) {
+            Toast.makeText(this, R.string.no_tailscale, Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun eraseEverything() {
@@ -120,7 +145,7 @@ class SettingsActivity : Activity() {
             .remove("recents")
             .putInt(Settings.ERASURES, store.getInt(Settings.ERASURES, 0) + 1)
             .apply()
-        list.addView(TextView(this).apply { text = "Effacé. Le clavier repart de zéro à sa prochaine ouverture." })
+        list.addView(TextView(this).apply { setText(R.string.erased) })
     }
 
     override fun onActivityResult(request: Int, result: Int, data: Intent?) {
@@ -133,22 +158,23 @@ class SettingsActivity : Activity() {
         }
     }
 
-    private fun toggle(label: String, key: String) {
+    private fun toggle(label: Int, key: String) {
         list.addView(Switch(this).apply {
-            text = label
+            setText(label)
             isChecked = store.getBoolean(key, true)
             setOnCheckedChangeListener { _: View, on: Boolean -> store.edit().putBoolean(key, on).apply() }
         })
     }
 
-    private fun action(label: String, run: () -> Unit) {
+    private fun action(label: Int, run: () -> Unit) {
         list.addView(Button(this).apply {
-            text = label
+            setText(label)
             setOnClickListener { run() }
         })
     }
 
     private companion object {
         const val EXPORT = 1
+        const val TAILSCALE = "com.tailscale.ipn"
     }
 }

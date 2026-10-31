@@ -57,11 +57,10 @@ fn pauses(samples: &[Sample], layout: &Layout, out: &mut Vec<Mark>) {
             .count();
         let end = samples.get(start + held.saturating_sub(1)).map_or(anchor.t_ms, |sample| sample.t_ms);
         let inside = start > 0 && end.saturating_add(EDGE_MS) <= last;
-        if inside && end - anchor.t_ms >= PAUSE_MS {
-            if let Some(letter) = nearest(layout, point(anchor)) {
+        if inside && end.saturating_sub(anchor.t_ms) >= PAUSE_MS
+            && let Some(letter) = nearest(layout, point(anchor)) {
                 out.push(Mark::Pause(letter));
             }
-        }
         start += held.max(1);
     }
 }
@@ -98,7 +97,7 @@ fn stops(samples: &[Sample], layout: &Layout, out: &mut Vec<Mark>) {
         };
         let spent = b.t_ms.saturating_sub(a.t_ms);
         match visits.last_mut() {
-            Some((current, total)) if *current == letter => *total += spent,
+            Some((current, total)) if *current == letter => *total = total.saturating_add(spent),
             _ => visits.push((letter, spent)),
         }
     }
@@ -309,17 +308,8 @@ pub(crate) fn agreement(word: &str, marks: &[Mark]) -> f32 {
 #[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
-    use crate::layout::Key;
+    use crate::testkit::grid;
 
-    fn grid() -> Option<Layout> {
-        let rows = ["azertyuiop", "qsdfghjklm", "wxcvbn"];
-        let keys = rows.iter().zip([0.0_f32, 1.0, 2.0]).flat_map(|(row, y)| {
-            row.chars()
-                .zip((0_u8..).map(f32::from))
-                .map(move |(label, x)| Key { label, x, y })
-        });
-        Layout::new(keys).ok()
-    }
 
     fn line(from: [f32; 2], to: [f32; 2], steps: u16, ms_each: u32, t: &mut u32, out: &mut Vec<Sample>) {
         for step in 0..=steps {
@@ -395,7 +385,7 @@ mod tests {
 
         let (mut straight, mut t) = (Vec::new(), 0);
         line([0.0, 0.0], [9.0, 0.0], 45, 8, &mut t, &mut straight);
-        assert!(intent_points(&straight, 1.0).is_empty());
+        assert_eq!(intent_points(&straight, 1.0), Vec::<Point>::new());
     }
 
     #[test]

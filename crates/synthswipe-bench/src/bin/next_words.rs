@@ -11,8 +11,10 @@ use std::fmt::Write as _;
 
 const SLOTS: usize = 3;
 
-fn read(path: &str, min_count: u32) -> Result<BTreeMap<String, Vec<(u32, String)>>, Box<dyn Error>> {
-    let mut next: BTreeMap<String, Vec<(u32, String)>> = BTreeMap::new();
+type NextByWord = BTreeMap<String, Vec<(u32, String)>>;
+
+fn read(path: &str, min_count: u32) -> Result<NextByWord, Box<dyn Error>> {
+    let mut next = NextByWord::new();
     for line in std::fs::read_to_string(path)?.lines() {
         let mut fields = line.split(' ');
         let (Some(first), Some(second), Some(count), None) =

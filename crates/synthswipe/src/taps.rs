@@ -84,17 +84,8 @@ pub fn correct<'lexicon>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::Key;
+    use crate::testkit::grid;
 
-    fn grid() -> Option<Layout> {
-        let rows = ["azertyuiop", "qsdfghjklm", "wxcvbn"];
-        let keys = rows.iter().zip([0.0_f32, 1.0, 2.0]).flat_map(|(row, y)| {
-            row.chars()
-                .zip((0_u8..).map(f32::from))
-                .map(move |(label, x)| Key { label, x, y })
-        });
-        Layout::new(keys).ok()
-    }
 
     fn taps(layout: &Layout, word: &str) -> Vec<Point> {
         word.chars().filter_map(|letter| layout.center(letter)).collect()
@@ -121,7 +112,7 @@ mod tests {
             return;
         };
         let lexicon = Lexicon::new([("than", 150.0)]);
-        assert!(correct(&layout, &lexicon, &taps(&layout, "phan"), 0.02, 3, |_| 0.0).is_empty());
+        assert_eq!(correct(&layout, &lexicon, &taps(&layout, "phan"), 0.02, 3, |_| 0.0), Vec::new());
     }
 
     #[test]

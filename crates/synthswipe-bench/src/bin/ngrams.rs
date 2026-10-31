@@ -63,12 +63,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
     }
     for (key, count) in &pairs {
-        let (first, second) = ((key >> 32) as u32, *key as u32);
-        if *count >= min_pair && kept(first) && kept(second) {
-            if let (Some(a), Some(b)) = (words.get(first as usize), words.get(second as usize)) {
+        let (first, second) = (u32::try_from(key >> 32)?, u32::try_from(key & u64::from(u32::MAX))?);
+        if *count >= min_pair && kept(first) && kept(second)
+            && let (Some(a), Some(b)) = (words.get(first as usize), words.get(second as usize)) {
                 writeln!(out, "{a} {b} {count}")?;
             }
-        }
     }
     eprintln!("{seen} tokens, {} words, {} pairs seen", words.len(), pairs.len());
     Ok(())

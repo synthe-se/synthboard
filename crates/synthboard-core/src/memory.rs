@@ -3,6 +3,7 @@
 //! the next one has begun, so a word deleted straight away is never learned.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt::Write as _;
 use std::sync::Arc;
 
 use synthswipe::{Lexicon, signature_distance};
@@ -78,17 +79,17 @@ impl Memory {
     pub fn to_text(&self) -> String {
         let mut text = String::new();
         for (word, count) in &self.words {
-            text.push_str(&format!("{word}{SEPARATOR}{count}\n"));
+            let _ = writeln!(text, "{word}{SEPARATOR}{count}");
         }
         for ((first, second), count) in &self.pairs {
-            text.push_str(&format!("{first}{SEPARATOR}{second}{SEPARATOR}{count}\n"));
+            let _ = writeln!(text, "{first}{SEPARATOR}{second}{SEPARATOR}{count}");
         }
         for word in &self.blocked {
-            text.push_str(&format!("{BLOCK_MARK}{word}\n"));
+            let _ = writeln!(text, "{BLOCK_MARK}{word}");
         }
         for (word, points) in &self.traces {
             let joined: Vec<String> = points.iter().map(|[x, y]| format!("{x:.2},{y:.2}")).collect();
-            text.push_str(&format!("{TRACE_MARK}{word}{SEPARATOR}{}\n", joined.join(" ")));
+            let _ = writeln!(text, "{TRACE_MARK}{word}{SEPARATOR}{}", joined.join(" "));
         }
         text
     }
@@ -157,11 +158,10 @@ impl Memory {
     /// Keeps a gesture as the user's own way of writing `word`.
     pub fn add_trace(&mut self, word: &str, points: Vec<[f32; 2]>) {
         let word = word.to_lowercase();
-        if self.traces.iter().filter(|(known, _)| *known == word).count() >= TRACES_PER_WORD {
-            if let Some(oldest) = self.traces.iter().position(|(known, _)| *known == word) {
+        if self.traces.iter().filter(|(known, _)| *known == word).count() >= TRACES_PER_WORD
+            && let Some(oldest) = self.traces.iter().position(|(known, _)| *known == word) {
                 self.traces.remove(oldest);
             }
-        }
         if self.traces.len() >= MAX_TRACES {
             self.traces.remove(0);
         }
@@ -212,6 +212,7 @@ impl Memory {
 }
 
 #[cfg(test)]
+#[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
 
@@ -234,7 +235,7 @@ mod tests {
         let mut memory = Memory::default();
         memory.add_trace("Pue", trace);
         assert_eq!(memory.trace_matches(&near).first().map(|m| m.0.as_str()), Some("pue"));
-        assert!(memory.trace_matches(&far).is_empty());
+        assert_eq!(memory.trace_matches(&far), [] as [(std::string::String, f32, u32); 0]);
         let saved = Memory::parse(&memory.to_text(), |_| true);
         assert_eq!(saved.trace_matches(&near).len(), 1);
     }
@@ -246,6 +247,64 @@ mod tests {
             memory.add_trace("mot", vec![[f32::from(offset), 0.0]]);
         }
         assert!(memory.traces.len() <= TRACES_PER_WORD);
+    }
+
+    #[test]
+    fn a_habit_is_the_log_of_its_count() {
+        let mut memory = Memory::default();
+        memory.learn("a", "b", |_| true);
+        memory.learn("a", "b", |_| true);
+        assert!((memory.habit("a", "b") - 3.0_f32.ln()).abs() < 0.001);
+        assert!((memory.familiarity("b") - 3.0_f32.ln()).abs() < 0.001);
+    }
+
+    #[test]
+    fn a_full_memory_forgets_what_was_seen_once() {
+        let mut memory = Memory::default();
+        for index in 0..30 {
+            memory.learn("x", &format!("w{index}"), |_| true);
+        }
+        memory.learn("x", "kept", |_| true);
+        memory.learn("x", "kept", |_| true);
+        memory.forget_rarest();
+        assert_eq!(memory.next_after("x"), ["kept"]);
+        assert!(memory.familiarity("w1").abs() < f32::EPSILON);
+        assert!(memory.familiarity("kept") > 0.0);
+    }
+
+    #[test]
+    fn a_known_word_never_joins_the_extra_words() {
+        let mut memory = Memory::default();
+        memory.learn("a", "bonjour", |_| true);
+        memory.learn("a", "bonjour", |_| true);
+        assert!(memory.extra_words().is_none());
+    }
+
+    #[test]
+    fn saved_memory_keeps_blocks_counts_and_extra_words() {
+        let mut memory = Memory::default();
+        memory.learn("a", "zxcv", |_| false);
+        memory.learn("a", "zxcv", |_| false);
+        memory.forget("autre", |_| true);
+        let saved = Memory::parse(&memory.to_text(), |_| false);
+        assert!(saved.is_blocked("autre"));
+        assert!(saved.extra_words().is_some_and(|words| words.contains("zxcv")));
+        assert!((saved.habit("a", "zxcv") - 3.0_f32.ln()).abs() < 0.001);
+    }
+
+    #[test]
+    fn traces_keep_the_closest_strength_and_count_every_match() {
+        let mut memory = Memory::default();
+        let exact = vec![[1.0, 1.0], [2.0, 1.0]];
+        memory.add_trace("mot", exact.clone());
+        memory.add_trace("mot", vec![[1.2, 1.0], [2.2, 1.0]]);
+        memory.add_trace("mot", vec![[9.0, 9.0], [9.0, 9.0]]);
+        let found = memory.trace_matches(&exact);
+        assert_eq!(found.len(), 1);
+        assert!((found[0].1 - 1.0).abs() < 0.001);
+        assert_eq!(found[0].2, 2);
+        memory.forget("mot", |_| true);
+        assert_eq!(memory.trace_matches(&exact), Vec::new());
     }
 
     #[test]
@@ -272,7 +331,7 @@ mod tests {
         memory.learn("je", "merde", |_| true);
         memory.forget("Merde", |_| true);
         assert!(memory.is_blocked("merde"));
-        assert!(memory.next_after("je").is_empty());
+        assert_eq!(memory.next_after("je"), [] as [std::string::String; 0]);
         let saved = Memory::parse(&memory.to_text(), |_| true);
         assert!(saved.is_blocked("merde"));
         memory.learn("je", "merde", |_| true);

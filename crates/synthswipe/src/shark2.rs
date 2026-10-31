@@ -295,32 +295,28 @@ fn rank_path<'lexicon>(
     let crossings = Crossings::new(&fine.gesture, alphabet, layout, params.pass_radius * pitch);
 
     let mut scratch = Scratch::default();
+    let mut keys: Vec<Point> = Vec::new();
     let mut ranked: Vec<(f32, &'lexicon Entry)> = Vec::new();
     lexicon.reachable(
         |letter, position| crossings.next(letter, position),
         |letter| flagged(&is_start, letter),
         |letter| flagged(&is_end, letter),
         |entry| {
-            let mut keys = std::mem::take(&mut scratch.keys);
             word_path(entry, &mut keys);
             let score = coarse.score(&keys, params.lambda * entry.weight, &mut scratch);
-            scratch.keys = keys;
             ranked.push((score, entry));
         },
     );
 
     keep_best(&mut ranked, usize::from(params.refine), best_first);
     for (score, entry) in &mut ranked {
-        let mut keys = std::mem::take(&mut scratch.keys);
         word_path(entry, &mut keys);
         *score = fine.score(&keys, params.lambda * entry.weight, &mut scratch);
-        scratch.keys = keys;
     }
     keep_best(&mut ranked, usize::from(params.rerank), best_first);
 
     let mut row = Vec::new();
     for (score, entry) in &mut ranked {
-        let mut keys = std::mem::take(&mut scratch.keys);
         word_path(entry, &mut keys);
         *score -= params.alignment_weight * alignment_cost(&fine.gesture, &keys, pitch, &mut row);
         *score -= params.intent_weight * unexplained(intent, &keys, pitch);
@@ -331,7 +327,6 @@ fn rank_path<'lexicon>(
         }
         *score += params.context_weight * context(&entry.surface);
         *score += params.mark_weight * agreement(&entry.surface, marks);
-        scratch.keys = keys;
     }
     ranked
 }
@@ -391,7 +386,6 @@ fn keep_best<T>(items: &mut Vec<T>, count: usize, order: impl Fn(&T, &T) -> Orde
 /// Reusable buffers, so that a decode allocates once and not per word.
 #[derive(Default)]
 struct Scratch {
-    keys: Vec<Point>,
     template: Vec<Point>,
     template_shape: Vec<Point>,
 }
@@ -452,17 +446,9 @@ impl Probe {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testkit::grid;
     use crate::layout::Key;
 
-    fn grid() -> Option<Layout> {
-        let rows = ["azertyuiop", "qsdfghjklm", "wxcvbn"];
-        let keys = rows.iter().zip([0.0_f32, 1.0, 2.0]).flat_map(|(row, y)| {
-            row.chars()
-                .zip((0_u8..).map(f32::from))
-                .map(move |(label, x)| Key { label, x, y })
-        });
-        Layout::new(keys).ok()
-    }
 
     fn trace(layout: &Layout, word: &str) -> Vec<Sample> {
         crate::fold(word)
@@ -522,12 +508,8 @@ mod tests {
         let found = decode(&layout, &lexicon, &samples, &Params::default(), 4).unwrap_or_default();
         let surfaces: Vec<&str> = found.iter().map(|candidate| candidate.surface).collect();
         assert_eq!(surfaces, ["bon", "bn"]);
-        let close = |index: usize, expected: f32| {
-            found.get(index).is_some_and(|c| (c.score - expected).abs() < 0.001)
-        };
         assert!(found.first().is_some_and(|c| c.score > -3.0), "{found:?}");
         assert!(found.get(1).is_some_and(|c| c.score < -5.0), "{found:?}");
-        let _ = close;
     }
 
     #[test]

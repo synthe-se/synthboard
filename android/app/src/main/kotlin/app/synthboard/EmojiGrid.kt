@@ -24,6 +24,8 @@ class EmojiGrid(
     private val textColor: Int,
     private val keyColor: Int,
     private val pressedColor: Int,
+    private val recentsTitle: String,
+    private val searchHint: String,
     private val invalidate: () -> Unit,
     private val send: (Event) -> Unit,
 ) {
@@ -122,7 +124,7 @@ class EmojiGrid(
         val columns = (width / cell).toInt().coerceAtLeast(1)
         val built = ArrayList<Row>()
         if (recents.isNotEmpty()) {
-            built += Header("Récents")
+            built += Header(recentsTitle)
             recents.map { EmojiItem(it, emptyList()) }.chunked(columns).forEach { built += Cells(it) }
         }
         for ((name, items) in groups) {
@@ -250,7 +252,7 @@ class EmojiGrid(
 
     private fun drawSearchRow(canvas: Canvas) {
         Icons.drawSearch(canvas, bar / 2, bar / 2, ICON_DP * density, iconPaint)
-        canvas.drawText("Rechercher / Search", bar, bar / 2 - (labelPaint.descent() + labelPaint.ascent()) / 2, labelPaint)
+        canvas.drawText(searchHint, bar, bar / 2 - (labelPaint.descent() + labelPaint.ascent()) / 2, labelPaint)
     }
 
     private fun drawStrip(canvas: Canvas) {
