@@ -66,8 +66,8 @@ pub fn correct<'lexicon>(
     lexicon.along_taps(cost, taps.len(), MAX_COST, NODE_BUDGET, |entry, spent, extra| {
         let penalty = COMPLETION_PENALTY * f32::from(extra);
         found.push(Correction {
-            surface: &entry.surface,
-            score: weight * entry.weight + context(&entry.surface) - spent - penalty,
+            surface: entry.surface,
+            score: weight * entry.weight + context(entry.surface) - spent - penalty,
             cost: spent,
             complete: extra == 0,
         });

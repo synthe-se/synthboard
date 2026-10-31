@@ -242,19 +242,19 @@ pub fn decode_in_context<'lexicon>(
     ranked.sort_by(best_first);
     // A word can be reached by two paths and must still appear only once.
     let mut seen = HashSet::new();
-    ranked.retain(|item| seen.insert(&*item.1.surface));
+    ranked.retain(|item| seen.insert(item.1.surface));
     ranked.truncate(top_k);
     Ok(ranked
         .into_iter()
         .map(|(score, entry)| Candidate {
-            surface: &entry.surface,
+            surface: entry.surface,
             score,
         })
         .collect())
 }
 
-fn best_first(a: &(f32, &Entry), b: &(f32, &Entry)) -> Ordering {
-    b.0.total_cmp(&a.0).then_with(|| a.1.surface.cmp(&b.1.surface))
+fn best_first(a: &(f32, Entry<'_>), b: &(f32, Entry<'_>)) -> Ordering {
+    b.0.total_cmp(&a.0).then_with(|| a.1.surface.cmp(b.1.surface))
 }
 
 /// Ranks the lexicon against one reading of the gesture.
@@ -266,14 +266,14 @@ fn rank_path<'lexicon>(
     intent: &[Point],
     params: &Params,
     context: &impl Fn(&str) -> f32,
-) -> Vec<(f32, &'lexicon Entry)> {
+) -> Vec<(f32, Entry<'lexicon>)> {
     let (Some(&start), Some(&end)) = (path.first(), path.last()) else {
         return Vec::new();
     };
     let pitch = layout.pitch();
     let alphabet = lexicon.alphabet();
     let centers: Vec<Option<Point>> = alphabet.iter().map(|&key| layout.center(key)).collect();
-    let word_path = |entry: &Entry, out: &mut Vec<Point>| {
+    let word_path = |entry: &Entry<'_>, out: &mut Vec<Point>| {
         out.clear();
         out.extend(
             entry
@@ -296,13 +296,13 @@ fn rank_path<'lexicon>(
 
     let mut scratch = Scratch::default();
     let mut keys: Vec<Point> = Vec::new();
-    let mut ranked: Vec<(f32, &'lexicon Entry)> = Vec::new();
+    let mut ranked: Vec<(f32, Entry<'lexicon>)> = Vec::new();
     lexicon.reachable(
         |letter, position| crossings.next(letter, position),
         |letter| flagged(&is_start, letter),
         |letter| flagged(&is_end, letter),
         |entry| {
-            word_path(entry, &mut keys);
+            word_path(&entry, &mut keys);
             let score = coarse.score(&keys, params.lambda * entry.weight, &mut scratch);
             ranked.push((score, entry));
         },
@@ -325,8 +325,8 @@ fn rank_path<'lexicon>(
             let miss = distance(start, first) / pitch;
             *score -= params.start_weight * miss * miss;
         }
-        *score += params.context_weight * context(&entry.surface);
-        *score += params.mark_weight * agreement(&entry.surface, marks);
+        *score += params.context_weight * context(entry.surface);
+        *score += params.mark_weight * agreement(entry.surface, marks);
     }
     ranked
 }

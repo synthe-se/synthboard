@@ -3,13 +3,13 @@ use std::collections::HashMap;
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
-/// One word of a lexicon.
-#[derive(Debug, Clone)]
-pub struct Entry {
+/// One word of a lexicon, read from its compact storage.
+#[derive(Debug, Clone, Copy)]
+pub struct Entry<'lexicon> {
     /// The lowercase word as it is written.
-    pub surface: Box<str>,
+    pub surface: &'lexicon str,
     /// The letters a finger crosses, from [`fold`], as ids into the alphabet.
-    pub(crate) letters: Box<[u16]>,
+    pub(crate) letters: &'lexicon [u16],
     /// Log-scale likelihood on a 0 to 255 scale: higher means more common.
     pub weight: f32,
     /// Bit set of the languages this word belongs to.
@@ -24,17 +24,27 @@ const APOSTROPHE: char = '\'';
 #[derive(Debug, Clone, Copy, Default)]
 struct Node {
     letter: u16,
+    entries_len: u16,
     next_sibling: u32,
     first_child: u32,
     entries_start: u32,
-    entries_end: u32,
 }
 
 /// Words stored in a trie over their key letters. Words sharing keys, such as
 /// `ou` and `où`, end on the same node.
+///
+/// Every word lives in a few flat arrays rather than in its own allocations:
+/// hundreds of thousands of small allocations cost a phone far more than the
+/// text itself, and a flat layout is also faster to walk.
 #[derive(Debug, Clone)]
 pub struct Lexicon {
-    entries: Vec<Entry>,
+    surfaces: String,
+    surface_ends: Vec<u32>,
+    letters: Vec<u16>,
+    letter_ends: Vec<u32>,
+    weights: Vec<u8>,
+    languages: Vec<u8>,
+    words: usize,
     nodes: Vec<Node>,
     alphabet: Vec<char>,
 }
@@ -105,6 +115,7 @@ impl Lexicon {
             .map(|(surface, (weight, languages))| (fold(&surface), surface, weight, languages))
             .filter(|(keys, ..)| !keys.is_empty())
             .collect();
+        let words = folded.len();
         let through_apostrophe: Vec<(Vec<char>, String, f32, u8)> = folded
             .iter()
             .filter_map(|(_, surface, weight, languages)| {
@@ -127,33 +138,42 @@ impl Lexicon {
                 .and_then(|id| u16::try_from(id).ok())
                 .unwrap_or(u16::MAX)
         };
-        let entries: Vec<Entry> = folded
-            .into_iter()
-            .map(|(keys, surface, weight, languages)| Entry {
-                surface: surface.into_boxed_str(),
-                letters: keys.iter().map(letter_id).collect(),
-                weight,
-                languages,
-            })
-            .collect();
-        let nodes = build_trie(&entries);
-        Self {
-            entries,
-            nodes,
-            alphabet,
+        let mut lexicon = Self {
+            surfaces: String::new(),
+            surface_ends: Vec::with_capacity(folded.len()),
+            letters: Vec::new(),
+            letter_ends: Vec::with_capacity(folded.len()),
+            weights: Vec::with_capacity(folded.len()),
+            languages: Vec::with_capacity(folded.len()),
+            words,
+            nodes: Vec::new(),
+            alphabet: Vec::new(),
+        };
+        for (keys, surface, weight, languages) in folded {
+            lexicon.surfaces.push_str(&surface);
+            lexicon.surface_ends.push(u32::try_from(lexicon.surfaces.len()).unwrap_or(u32::MAX));
+            lexicon.letters.extend(keys.iter().map(letter_id));
+            lexicon.letter_ends.push(u32::try_from(lexicon.letters.len()).unwrap_or(u32::MAX));
+            lexicon.weights.push(weight.clamp(0.0, 255.0).round() as u8);
+            lexicon.languages.push(languages);
         }
+        lexicon.alphabet = alphabet;
+        lexicon.nodes = build_trie(&lexicon);
+        lexicon.surfaces.shrink_to_fit();
+        lexicon.letters.shrink_to_fit();
+        lexicon
     }
 
     /// Number of words.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.words
     }
 
     /// Whether the lexicon holds no words.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.words == 0
     }
 
     /// Whether `word`, lowercased, is in the lexicon.
@@ -168,7 +188,7 @@ impl Lexicon {
         self.find(word).map_or(0, |entry| entry.languages)
     }
 
-    fn find(&self, word: &str) -> Option<&Entry> {
+    fn find(&self, word: &str) -> Option<Entry<'_>> {
         let lower = word.to_lowercase().replace('’', "'");
         let mut node = self.nodes.first();
         for key in fold(&lower) {
@@ -178,7 +198,25 @@ impl Lexicon {
                     .find(|child| Some(usize::from(child.letter)) == letter)
             });
         }
-        node.and_then(|node| self.entries_of(node).iter().find(|e| *e.surface == *lower))
+        node.and_then(|node| self.entries_of(node).find(|entry| entry.surface == lower))
+    }
+
+    /// The range an array of ends gives to one item.
+    fn span(ends: &[u32], index: usize) -> Option<std::ops::Range<usize>> {
+        let start = match index.checked_sub(1) {
+            Some(previous) => *ends.get(previous)? as usize,
+            None => 0,
+        };
+        Some(start..*ends.get(index)? as usize)
+    }
+
+    fn entry(&self, index: usize) -> Option<Entry<'_>> {
+        Some(Entry {
+            surface: self.surfaces.get(Self::span(&self.surface_ends, index)?)?,
+            letters: self.letters.get(Self::span(&self.letter_ends, index)?)?,
+            weight: f32::from(*self.weights.get(index)?),
+            languages: *self.languages.get(index)?,
+        })
     }
 
     /// The letters of the trie, indexed by the ids used in `reachable`.
@@ -200,10 +238,9 @@ impl Lexicon {
         }
     }
 
-    fn entries_of(&self, node: &Node) -> &[Entry] {
-        self.entries
-            .get(node.entries_start as usize..node.entries_end as usize)
-            .unwrap_or_default()
+    fn entries_of(&self, node: &Node) -> impl Iterator<Item = Entry<'_>> {
+        let start = node.entries_start as usize;
+        (start..start + usize::from(node.entries_len)).filter_map(|index| self.entry(index))
     }
 
     /// Visits the words the taps may spell, with their spatial cost and how
@@ -217,7 +254,7 @@ impl Lexicon {
         taps: usize,
         max_cost: f32,
         budget: usize,
-        mut visit: impl FnMut(&'a Entry, f32, u8),
+        mut visit: impl FnMut(Entry<'a>, f32, u8),
     ) {
         const MAX_EXTRA: u8 = 6;
         let Some(root) = self.nodes.first() else {
@@ -235,7 +272,6 @@ impl Lexicon {
             }
             if step.next_tap >= taps {
                 self.entries_of(step.node)
-                    .iter()
                     .for_each(|entry| visit(entry, step.spent, step.extra));
                 if step.extra < MAX_EXTRA {
                     stack.extend(self.children(step.node).map(|node| TapStep {
@@ -275,7 +311,7 @@ impl Lexicon {
         next: impl Fn(u16, u16) -> Option<u16>,
         is_start: impl Fn(u16) -> bool,
         is_end: impl Fn(u16) -> bool,
-        mut visit: impl FnMut(&'a Entry),
+        mut visit: impl FnMut(Entry<'a>),
     ) {
         let mut stack: Vec<(&Node, u16, bool)> = Vec::new();
         if let Some(root) = self.nodes.first() {
@@ -290,7 +326,7 @@ impl Lexicon {
                     continue;
                 };
                 if is_end(child.letter) {
-                    self.entries_of(child).iter().for_each(&mut visit);
+                    self.entries_of(child).for_each(&mut visit);
                 }
                 if child.first_child != NO_NODE {
                     stack.push((child, reached, false));
@@ -309,12 +345,16 @@ struct TapStep<'a> {
     extra: u8,
 }
 
-fn build_trie(entries: &[Entry]) -> Vec<Node> {
+fn build_trie(lexicon: &Lexicon) -> Vec<Node> {
     let mut nodes = vec![Node::default()];
     let mut path: Vec<u32> = vec![0];
     let mut previous: &[u16] = &[];
-    for (index, entry) in (0_u32..).zip(entries) {
-        let shared = shared_prefix(previous, &entry.letters);
+    for index in 0..lexicon.surface_ends.len() {
+        let Some(entry) = lexicon.entry(index) else {
+            break;
+        };
+        let position = u32::try_from(index).unwrap_or(u32::MAX);
+        let shared = shared_prefix(previous, entry.letters);
         let mut older_sibling = path.get(shared + 1).copied();
         path.truncate(shared + 1);
         for &letter in entry.letters.iter().skip(shared) {
@@ -338,12 +378,12 @@ fn build_trie(entries: &[Entry]) -> Vec<Node> {
             path.push(new_index);
         }
         if let Some(node) = path.last().and_then(|&last| nodes.get_mut(last as usize)) {
-            if node.entries_end == node.entries_start {
-                node.entries_start = index;
+            if node.entries_len == 0 {
+                node.entries_start = position;
             }
-            node.entries_end = index + 1;
+            node.entries_len = node.entries_len.saturating_add(1);
         }
-        previous = &entry.letters;
+        previous = entry.letters;
     }
     nodes
 }
@@ -376,6 +416,17 @@ mod tests {
         assert!(lexicon.contains("c'est"));
         assert!(lexicon.contains("C’est"));
         assert_eq!(lexicon.languages("c'est"), 0);
+    }
+
+    #[test]
+    fn words_read_back_exactly_from_flat_storage() {
+        let lexicon = Lexicon::with_languages([("été", 140.0, 1), ("merge", 113.0, 2), ("c'est", 159.0, 1)]);
+        assert_eq!(lexicon.len(), 3);
+        let surfaces: Vec<&str> = (0..4).filter_map(|i| lexicon.entry(i)).map(|e| e.surface).collect();
+        assert_eq!(surfaces.iter().filter(|word| **word == "c'est").count(), 2);
+        assert!(surfaces.contains(&"été") && surfaces.contains(&"merge"));
+        assert_eq!(lexicon.find("merge").map(|e| (e.weight, e.languages)), Some((113.0, 2)));
+        assert!(lexicon.entry(4).is_none());
     }
 
     #[test]

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Builds the keyboard's word list from the benchmark dictionaries: `word,weight`
-# lines, French and English merged, with words of weight 0 and 1 dropped.
+# lines, French and English merged, with words below weight 20 dropped: they cost memory and win no gesture.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -14,7 +14,7 @@ mkdir -p "$(dirname "$out")"
 # for a language where it is reasonably common, so that `il` in the English
 # list does not make it English. Below that it stays usable, without language.
 language() {
-    zstd -dc "$1" | tail -n +2 | awk -F, -v bit="$2" 'NF == 2 && $2 >= 2 { print $1 "," $2 "," ($2 >= 50 ? bit : 0) }'
+    zstd -dc "$1" | tail -n +2 | awk -F, -v bit="$2" 'NF == 2 && $2 >= 20 { print $1 "," $2 "," ($2 >= 50 ? bit : 0) }'
 }
 {
     language "$lists/$french.lex.csv.zst" 1

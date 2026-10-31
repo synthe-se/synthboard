@@ -2,8 +2,6 @@
 //! is likely and `sous` is not. This reads the sentence as a sentence, which
 //! word pairs cannot do across `je ne suis` or `je me suis`.
 
-use std::collections::HashMap;
-
 const FIRST_SINGULAR: u8 = 1;
 const SECOND_SINGULAR: u8 = 2;
 const THIRD_SINGULAR: u8 = 4;
@@ -51,24 +49,53 @@ fn subject(history: &[String]) -> Option<u8> {
     found
 }
 
-/// French word forms and the persons they conjugate.
+/// French word forms and the persons they conjugate, sorted in flat arrays so
+/// that a hundred thousand forms stay one allocation.
 #[derive(Debug, Clone, Default)]
 pub struct Grammar {
-    forms: HashMap<Box<str>, u8>,
+    text: String,
+    ends: Vec<u32>,
+    masks: Vec<u8>,
 }
 
 impl Grammar {
     /// Reads `form TAB mask` lines, skipping bad ones.
     #[must_use]
     pub fn parse(text: &str) -> Self {
-        let forms = text
+        let mut forms: Vec<(&str, u8)> = text
             .lines()
             .filter_map(|line| {
                 let (form, mask) = line.split_once('\t')?;
-                Some((form.into(), mask.parse().ok()?))
+                Some((form, mask.parse().ok()?))
             })
             .collect();
-        Self { forms }
+        forms.sort_unstable();
+        let mut grammar = Self::default();
+        for (form, mask) in forms {
+            grammar.text.push_str(form);
+            grammar.ends.push(u32::try_from(grammar.text.len()).unwrap_or(u32::MAX));
+            grammar.masks.push(mask);
+        }
+        grammar
+    }
+
+    fn form(&self, index: usize) -> &str {
+        let start = index.checked_sub(1).and_then(|i| self.ends.get(i)).map_or(0, |&end| end as usize);
+        let end = self.ends.get(index).map_or(start, |&end| end as usize);
+        self.text.get(start..end).unwrap_or("")
+    }
+
+    fn mask(&self, form: &str) -> Option<u8> {
+        let (mut low, mut high) = (0, self.ends.len());
+        while low < high {
+            let middle = low + (high - low) / 2;
+            match self.form(middle).cmp(form) {
+                std::cmp::Ordering::Less => low = middle + 1,
+                std::cmp::Ordering::Greater => high = middle,
+                std::cmp::Ordering::Equal => return self.masks.get(middle).copied(),
+            }
+        }
+        None
     }
 
     /// How well `word` fits after `history`, from -1 to 1. Without a subject,
@@ -83,7 +110,7 @@ impl Grammar {
         if CLITICS.contains(&lower.as_str()) {
             return AGREES;
         }
-        match self.forms.get(lower.as_str()) {
+        match self.mask(&lower) {
             Some(mask) if mask & person != 0 => AGREES,
             Some(_) => DISAGREES,
             None => 0.0,
@@ -121,6 +148,17 @@ mod tests {
     fn an_object_pronoun_does_not_replace_the_subject() {
         let grammar = Grammar::parse(FORMS);
         assert!(grammar.score(&history(&["il", "nous"]), "voit") > 0.0);
+    }
+
+    #[test]
+    fn every_form_is_found_in_the_sorted_arrays() {
+        let grammar = Grammar::parse("vois\t3\nest\t4\nsuis\t1\nbad\nsous\t0\n");
+        assert_eq!(grammar.mask("est"), Some(4));
+        assert_eq!(grammar.mask("sous"), Some(0));
+        assert_eq!(grammar.mask("suis"), Some(1));
+        assert_eq!(grammar.mask("vois"), Some(3));
+        assert_eq!(grammar.mask("aaa"), None);
+        assert_eq!(grammar.mask("zzz"), None);
     }
 
     #[test]

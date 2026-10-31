@@ -35,9 +35,26 @@ class SynthboardService : InputMethodService() {
     private var previewStale = false
     private var view: KeyboardView? = null
     private var emoji: List<Pair<String, List<EmojiItem>>> = emptyList()
+    private var emojiLoading = false
     private var tone = 0
     private var haptics = true
     private var seenErasures = 0
+
+    /** Loads the emoji the first time the panel opens: most sessions never do. */
+    private fun loadEmoji() {
+        if (emojiLoading) return
+        emojiLoading = true
+        Thread {
+            val paint = Paint()
+            val groups = keyboard.loadEmoji(assets.open("emoji.tsv").use { it.readBytes() }).map { group ->
+                group.name to group.items.filter { paint.hasGlyph(it.emoji) }
+            }
+            handler.post {
+                emoji = groups
+                view?.setEmoji(groups)
+            }
+        }.start()
+    }
 
     /**
      * Back-pressure, with no timer: one preview runs at a time, and when it
@@ -111,16 +128,6 @@ class SynthboardService : InputMethodService() {
                 if (traceFile() != null) send(Event.EnableTraces)
             }
         }.start()
-        Thread {
-            val paint = Paint()
-            val groups = keyboard.loadEmoji(assets.open("emoji.tsv").use { it.readBytes() }).map { group ->
-                group.name to group.items.filter { paint.hasGlyph(it.emoji) }
-            }
-            handler.post {
-                emoji = groups
-                view?.setEmoji(groups)
-            }
-        }.start()
         preferences()?.let { saved ->
             tone = saved.getInt("tone", 0)
             seenErasures = saved.getInt(Settings.ERASURES, 0)
@@ -192,7 +199,10 @@ class SynthboardService : InputMethodService() {
                 is Command.Suggestions -> view?.setSuggestions(command)
                 is Command.RequestContext -> wantsContext = true
                 is Command.Trail -> view?.setTrail(command.on)
-                is Command.EmojiPanel -> view?.setPanel(command.on, command.recents, tone)
+                is Command.EmojiPanel -> {
+                    if (command.on) loadEmoji()
+                    view?.setPanel(command.on, command.recents, tone)
+                }
                 is Command.EmojiSearch -> view?.setSearch(command.on, command.query, command.results)
                 is Command.SaveMemory -> saveMemory(command.text)
                 is Command.Trace -> traceFile()?.appendText(command.line + "\n")
