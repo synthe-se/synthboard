@@ -6,10 +6,10 @@ edition.workspace = true
 publish.workspace = true
 
 [lib]
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-boltffi = "=0.32.1"
+zeroize = "1.9.1"
 synthboard-core = { path = "../synthboard-core" }
 synthboard-seal = { path = "../synthboard-seal" }
 synthswipe = { path = "../synthswipe" }

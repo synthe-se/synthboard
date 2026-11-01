@@ -28,4 +28,5 @@
     <string name="traces_full">Trace file full: recording has stopped. Send and delete it.</string>
     <string name="delete_traces">Delete my traces</string>
     <string name="traces_deleted">Traces deleted.</string>
+    <string name="try_out">Try the keyboard here</string>
 </resources>

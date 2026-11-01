@@ -1,26 +1,27 @@
 //! The emoji catalogue and its search. French and English keywords are searched
 //! together, without accents, and nothing leaves the device.
 
-use boltffi::data;
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
 const MAX_RESULTS: usize = 32;
 
-/// One emoji with its skin tone variants.
-#[data]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EmojiItem {
-    pub emoji: String,
-    pub tones: Vec<String>,
+crate::wire_struct! {
+    /// One emoji with its skin tone variants.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct EmojiItem {
+        pub emoji: String,
+        pub tones: Vec<String>,
+    }
 }
 
-/// One category, in display order.
-#[data]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EmojiGroup {
-    pub name: String,
-    pub items: Vec<EmojiItem>,
+crate::wire_struct! {
+    /// One category, in display order.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct EmojiGroup {
+        pub name: String,
+        pub items: Vec<EmojiItem>,
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -3,7 +3,6 @@
 
 use std::sync::Arc;
 
-use boltffi::data;
 use synthswipe::{Affinities, Grammar, Layout, Lexicon, Params, signature, signature_distance, SENTENCE_START, Sample, correct, decode_in_context, tokens};
 use unicode_segmentation::UnicodeSegmentation;
 use zeroize::Zeroize;
@@ -72,7 +71,7 @@ const TRACE_VOTES: u32 = 2;
 /// What a screen reader says for a key of a field that must stay secret.
 const SECRET_KEY: &str = "•";
 /// The mirrors' room, so that writing into them does not leave old copies behind.
-const MIRROR_BYTES: usize = 8192;
+const MIRROR_BYTES: usize = 4096;
 /// How close a new gesture must be to a deleted one to be a second try, in key pitches.
 const RETRY_REACH: f32 = 0.6;
 const FRENCH: u8 = 1;
@@ -99,12 +98,13 @@ const HABIT_WEIGHT: f32 = 6.0;
 /// neighbouring key, so that a word is never rewritten on weak evidence.
 const AUTOCORRECT_COST: f32 = 3.0;
 
-/// Rules derived from the text field.
-#[data]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct Field {
-    pub input_type: u32,
-    pub ime_options: u32,
+crate::wire_struct! {
+    /// Rules derived from the text field.
+    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+    pub struct Field {
+        pub input_type: u32,
+        pub ime_options: u32,
+    }
 }
 
 impl Field {
@@ -182,56 +182,58 @@ impl Field {
     }
 }
 
-/// Something that happened. Every time is in milliseconds on one clock.
-#[data]
-#[derive(Debug, Clone, PartialEq)]
-pub enum Event {
-    /// The keyboard window has a new size.
-    Resize { width: f32, screen_height: f32, density: f32 },
-    /// The keyboard height setting changed, 1.0 being the usual height.
-    HeightScale { scale: f32 },
-    /// Erases everything learned, from the settings screen.
-    ForgetAll,
-    /// The keyboard opened on a field.
-    Shown { field: Field, before: String, after: String, cursor: u32 },
-    /// The keyboard closed.
-    Hidden,
-    Down { pointer: i32, x: f32, y: f32, t: u64 },
-    Move { pointer: i32, x: f32, y: f32, t: u64 },
-    Up { pointer: i32, x: f32, y: f32, t: u64 },
-    /// The system took the touch away.
-    Cancel,
-    /// The deadline returned by the last step has passed.
-    Deadline { t: u64 },
-    /// The field's selection changed.
-    Selection { start: u32, end: u32 },
-    /// A screen reader's finger moved over the keyboard.
-    Hover { x: f32, y: f32 },
-    /// Answer to `Command::RequestContext`.
-    Context { before: String, after: String },
-    /// Text chosen outside the keys, such as an emoji.
-    Text { text: String },
-    /// Removes one grapheme, from the emoji panel.
-    DeleteOne,
-    /// Provides the recent emoji saved earlier.
-    Recents { items: Vec<String> },
-    /// The language data finished loading, so the bar can fill.
-    LanguageReady,
-    /// A keyboard session began, at this Unix time in seconds.
-    Session { unix: u64 },
-    /// The emoji panel's search row was tapped.
-    OpenEmojiSearch,
-    /// The emoji panel was closed from inside.
-    CloseEmojiPanel,
+crate::wire_enum! {
+    /// Something that happened. Every time is in milliseconds on one clock.
+    #[derive(Debug, Clone, PartialEq)]
+    pub enum Event {
+        /// The keyboard window has a new size.
+        Resize { width: f32, screen_height: f32, density: f32 },
+        /// The keyboard height setting changed, 1.0 being the usual height.
+        HeightScale { scale: f32 },
+        /// Erases everything learned, from the settings screen.
+        ForgetAll,
+        /// The keyboard opened on a field.
+        Shown { field: Field, before: String, after: String, cursor: u32 },
+        /// The keyboard closed.
+        Hidden,
+        Down { pointer: i32, x: f32, y: f32, t: u64 },
+        Move { pointer: i32, x: f32, y: f32, t: u64 },
+        Up { pointer: i32, x: f32, y: f32, t: u64 },
+        /// The system took the touch away.
+        Cancel,
+        /// The deadline returned by the last step has passed.
+        Deadline { t: u64 },
+        /// The field's selection changed.
+        Selection { start: u32, end: u32 },
+        /// A screen reader's finger moved over the keyboard.
+        Hover { x: f32, y: f32 },
+        /// Answer to `Command::RequestContext`.
+        Context { before: String, after: String },
+        /// Text chosen outside the keys, such as an emoji.
+        Text { text: String },
+        /// Removes one grapheme, from the emoji panel.
+        DeleteOne,
+        /// Provides the recent emoji saved earlier.
+        Recents { items: Vec<String> },
+        /// The language data finished loading, so the bar can fill.
+        LanguageReady,
+        /// A keyboard session began, at this Unix time in seconds.
+        Session { unix: u64 },
+        /// The emoji panel's search row was tapped.
+        OpenEmojiSearch,
+        /// The emoji panel was closed from inside.
+        CloseEmojiPanel,
+    }
 }
 
-/// The result of one event.
-#[data]
-#[derive(Debug, Default, PartialEq)]
-pub struct Step {
-    pub commands: Vec<Command>,
-    /// When to send `Event::Deadline`. `None` whenever no finger is down.
-    pub deadline: Option<u64>,
+crate::wire_struct! {
+    /// The result of one event.
+    #[derive(Debug, Default, PartialEq)]
+    pub struct Step {
+        pub commands: Vec<Command>,
+        /// When to send `Event::Deadline`. `None` whenever no finger is down.
+        pub deadline: Option<u64>,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -331,6 +333,9 @@ pub struct Engine {
     grammar: Option<Arc<Grammar>>,
     /// The owner's public key. Without one, no trace can exist.
     trace_key: Option<[u8; 32]>,
+    /// The public half of the memory key: saving needs no secret, so it works
+    /// on a locked phone, and plain memory never leaves Rust.
+    memory_key: Option<[u8; 32]>,
     layout_traced: bool,
     next_words: Option<Arc<NextWords>>,
     predictions: Vec<String>,
@@ -573,6 +578,7 @@ impl Engine {
             affinities: None,
             grammar: None,
             trace_key: None,
+            memory_key: None,
             layout_traced: false,
             next_words: None,
             predictions: Vec::new(),
@@ -637,6 +643,11 @@ impl Engine {
         self.trace_key = Some(key);
     }
 
+    /// Sets the public key that memory is sealed to.
+    pub fn set_memory_key(&mut self, key: [u8; 32]) {
+        self.memory_key = Some(key);
+    }
+
     /// Provides the emoji catalogue.
     pub fn set_catalog(&mut self, catalog: Arc<Catalog>) {
         self.catalog = Some(catalog);
@@ -667,7 +678,6 @@ impl Engine {
             }
             Event::ForgetAll => {
                 self.memory = Arc::new(Memory::default());
-                self.held = Held::Everything;
                 self.pending = None;
                 self.recents.clear();
                 self.protected.clear();
@@ -1005,9 +1015,15 @@ impl Engine {
     }
 
     fn save_memory(&mut self) {
-        if std::mem::take(&mut self.memory_changed) && self.held == Held::Everything {
-            self.out.push(Command::SaveMemory { text: self.memory.to_text() });
+        let Some(key) = self.memory_key.filter(|_| self.memory_changed && self.held == Held::Everything) else {
+            return;
+        };
+        let mut text = self.memory.to_text();
+        if let Ok(sealed) = synthboard_seal::seal(&key, text.as_bytes()) {
+            self.memory_changed = false;
+            self.out.push(Command::SaveMemory { sealed });
         }
+        text.zeroize();
     }
 
     /// Fills the bar with what comes next, or empties it inside a word.
@@ -2145,9 +2161,21 @@ mod tests {
         engine: Engine,
         text: String,
         t: u64,
+        memory_secret: [u8; 32],
     }
 
     impl Rig {
+        /// What a step saved, opened as the phone would open it.
+        fn saved(&self, step: &Step) -> Option<String> {
+            step.commands.iter().find_map(|command| match command {
+                Command::SaveMemory { sealed } => {
+                    let plain = synthboard_seal::open(&self.memory_secret, sealed).unwrap();
+                    Some(String::from_utf8(plain).unwrap())
+                }
+                _ => None,
+            })
+        }
+
         fn new(field: Field) -> Self {
             let mut engine = Engine::new();
             engine.step(Event::Resize { width: 1080.0, screen_height: 2424.0, density: DENSITY });
@@ -2162,7 +2190,9 @@ mod tests {
                 ("merge", 120.0),
                 ("merde", 160.0),
             ])));
-            let mut rig = Self { engine, text: String::new(), t: 10_000 };
+            let (memory_secret, memory_public) = synthboard_seal::generate_keys().unwrap();
+            engine.set_memory_key(memory_public);
+            let mut rig = Self { engine, text: String::new(), t: 10_000, memory_secret };
             let step = rig.engine.step(Event::Shown { field, before: String::new(), after: String::new(), cursor: 0 });
             rig.apply(step);
             rig.engine.load_memory("");
@@ -2755,7 +2785,7 @@ mod tests {
         let t = rig.t + 700;
         rig.send(Event::Down { pointer: 0, x, y, t });
         let step = rig.send(Event::Up { pointer: 0, x, y, t: t + 40 });
-        assert!(step.commands.iter().any(|c| matches!(c, Command::SaveMemory { text } if text.contains('~'))));
+        assert!(rig.saved(&step).unwrap().contains('~'));
     }
 
     fn plain_rig() -> Rig {
@@ -3270,11 +3300,7 @@ mod tests {
         let mut rig = plain_rig();
         rig.swipe("bonjour");
         let step = rig.send(Event::Hidden);
-        let Some(Command::SaveMemory { text }) =
-            step.commands.iter().find(|c| matches!(c, Command::SaveMemory { .. })).cloned()
-        else {
-            unreachable!("the word was kept");
-        };
+        let text = rig.saved(&step).unwrap();
         assert_eq!(rig.engine.memory.to_text(), "");
         rig.send(Event::Shown { field: rig.engine.field, before: String::new(), after: String::new(), cursor: 0 });
         rig.engine.load_memory(&text);
@@ -3289,6 +3315,20 @@ mod tests {
         rig.swipe("bonjour");
         let step = rig.send(Event::Hidden);
         assert!(!step.commands.iter().any(|c| matches!(c, Command::SaveMemory { .. })));
+    }
+
+    #[test]
+    fn memory_saves_without_any_secret_and_never_in_the_clear() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        let step = rig.send(Event::Hidden);
+        let Some(Command::SaveMemory { sealed }) =
+            step.commands.iter().find(|c| matches!(c, Command::SaveMemory { .. }))
+        else {
+            unreachable!("the word was kept");
+        };
+        assert!(!sealed.windows(7).any(|window| window == b"bonjour"));
+        assert!(rig.saved(&step).unwrap().contains("bonjour"));
     }
 
     #[test]

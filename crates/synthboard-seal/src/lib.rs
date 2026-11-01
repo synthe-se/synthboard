@@ -218,7 +218,7 @@ mod tests {
     fn nobody_else_reads_it() {
         let (_, public) = generate_keys().unwrap();
         let (other, _) = generate_keys().unwrap();
-        let record = seal(&public, b"prive").unwrap();
+        let record = seal(&public, b"johnduff").unwrap();
         assert_eq!(open(&other, &record), Err(SealError));
     }
 

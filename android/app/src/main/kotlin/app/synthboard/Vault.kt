@@ -9,25 +9,24 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * Encrypts what the keyboard learned, on top of Android's file encryption. The
- * key lives in the phone's secure hardware and cannot be copied out, and it only
- * works while the phone is unlocked, so a stolen file alone is useless. Nothing
- * is ever written in the clear if this fails.
+ * Guards the secret key that opens what the keyboard learned. The key that seals
+ * it lives in the phone's secure hardware and cannot be copied out, and it only
+ * works while the phone is unlocked, so stolen files alone are useless.
  */
 class Vault(private val key: () -> SecretKey) {
-    fun seal(text: String): ByteArray {
+    fun seal(secret: ByteArray): ByteArray {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, key())
         cipher.updateAAD(FORMAT)
-        return cipher.iv + cipher.doFinal(text.toByteArray())
+        return cipher.iv + cipher.doFinal(secret)
     }
 
-    fun open(sealed: ByteArray): String {
+    fun open(sealed: ByteArray): ByteArray {
         val cipher = Cipher.getInstance(TRANSFORMATION)
         val iv = sealed.copyOfRange(0, IV_BYTES)
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(TAG_BITS, iv))
         cipher.updateAAD(FORMAT)
-        return String(cipher.doFinal(sealed, IV_BYTES, sealed.size - IV_BYTES))
+        return cipher.doFinal(sealed, IV_BYTES, sealed.size - IV_BYTES)
     }
 
     companion object {

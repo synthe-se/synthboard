@@ -1,2 +1,4 @@
-# The native library finds these by name.
--keep class app.synthboard.core.** { *; }
+# The native library finds this method by name.
+-keepclasseswithmembernames class app.synthboard.core.Native {
+    native <methods>;
+}

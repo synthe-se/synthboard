@@ -47,12 +47,9 @@ class SynthboardService : InputMethodService() {
 
     private var readable = false
 
-    /** Memory that could not be written yet, because the phone locked first. Only the I/O thread uses it. */
-    private var unsaved: String? = null
-
     private fun preferences(): SharedPreferences = getSharedPreferences(Settings.FILE, MODE_PRIVATE)
 
-    private fun memoryFile() = File(filesDir, Settings.MEMORY_FILE)
+    private fun personalFile(name: String) = File(filesDir, name)
 
     /** The sealed trace. It only exists in a build holding an owner's key. */
     private fun traceFile(): File? = preferences()
@@ -83,13 +80,29 @@ class SynthboardService : InputMethodService() {
 
     /**
      * Brings memory back for this opening: it leaves RAM whenever the keyboard
-     * hides. A locked phone refuses the key, and the keyboard then works without.
+     * hides. Only Rust sees it in the clear. A locked phone refuses the secret
+     * key, and the keyboard then works without memory.
      */
     private fun loadMemory() {
         Core.onIo {
-            flushMemory()
-            keyboard.loadMemory(readMemory())
+            val secret = memorySecret()
+            val sealed = personalFile(Settings.MEMORY_FILE)
+            keyboard.setMemoryKey(personalFile(Settings.MEMORY_PUBLIC_FILE).readBytes())
+            keyboard.loadMemory(if (sealed.exists()) sealed.readBytes() else ByteArray(0), secret)
+            secret.fill(0)
         }
+    }
+
+    /** The secret key of memory, made with its public half on first use. */
+    private fun memorySecret(): ByteArray {
+        val sealed = personalFile(Settings.MEMORY_SECRET_FILE)
+        if (sealed.exists()) return vault.open(sealed.readBytes())
+        val keys = keyboard.newMemoryKeys()
+        val secret = keys.copyOfRange(0, KEY_BYTES)
+        writeFile(personalFile(Settings.MEMORY_PUBLIC_FILE), keys.copyOfRange(KEY_BYTES, keys.size))
+        writeFile(sealed, vault.seal(secret))
+        keys.fill(0)
+        return secret
     }
 
     /** Loads the emoji the first time the panel opens: most sessions never do. */
@@ -144,27 +157,15 @@ class SynthboardService : InputMethodService() {
         }
     }
 
-    private fun readMemory(): String {
-        val sealed = memoryFile()
-        return if (sealed.exists()) vault.open(sealed.readBytes()) else ""
-    }
-
-    private fun writeMemory(target: File, text: String) {
+    private fun writeFile(target: File, bytes: ByteArray) {
         val temporary = File(filesDir, "${target.name}.tmp")
-        temporary.writeBytes(vault.seal(text))
+        temporary.writeBytes(bytes)
         temporary.renameTo(target)
     }
 
-    private fun flushMemory() {
-        unsaved?.let { writeMemory(memoryFile(), it) }
-        unsaved = null
-    }
-
-    private fun saveMemory(text: String) {
-        Core.onIo {
-            unsaved = text
-            flushMemory()
-        }
+    /** The memory arrives sealed to a public key, so this works on a locked phone. */
+    private fun saveMemory(sealed: ByteArray) {
+        Core.onIo { writeFile(personalFile(Settings.MEMORY_FILE), sealed) }
     }
 
     private fun appendTrace(record: String) {
@@ -301,7 +302,7 @@ class SynthboardService : InputMethodService() {
                 strip?.setCovered(command.on)
             }
             is Command.EmojiSearch -> view?.setSearch(command.on, command.query, command.results)
-            is Command.SaveMemory -> saveMemory(command.text)
+            is Command.SaveMemory -> saveMemory(command.sealed)
             is Command.Trace -> appendTrace(command.record)
             is Command.SaveRecents ->
                 preferences().edit().putString(Settings.RECENTS, command.items.joinToString(" ")).apply()
@@ -341,6 +342,8 @@ class SynthboardService : InputMethodService() {
     }
 
     private companion object {
-        const val CONTEXT_CHARS = 2000
+        /** What the keyboard reads around the cursor: little, as it cannot be wiped from the JVM. */
+        const val CONTEXT_CHARS = 256
+        const val KEY_BYTES = 32
     }
 }

@@ -8,7 +8,7 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
-boltffi = "=0.32.1"
+synthboard-ffi = { path = "../crates/synthboard-ffi" }
 libfuzzer-sys = "0.4"
 synthboard-core = { path = "../crates/synthboard-core" }
 synthboard-seal = { path = "../crates/synthboard-seal", features = ["legacy"] }

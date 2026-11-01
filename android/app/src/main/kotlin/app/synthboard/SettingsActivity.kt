@@ -7,9 +7,12 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
+import android.text.InputType
+import android.view.Gravity
 import android.view.View
 import android.view.inputmethod.InputMethodManager
 import android.widget.Button
+import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.SeekBar
@@ -30,7 +33,9 @@ object Settings {
     const val RECENTS = "recents"
     const val FILE = "emoji"
     const val SCREENSHOTS = "screenshots"
-    const val MEMORY_FILE = "memory.vault"
+    const val MEMORY_FILE = "memory.sealed"
+    const val MEMORY_SECRET_FILE = "memory.key"
+    const val MEMORY_PUBLIC_FILE = "memory.pub"
     private const val TRACE_KEY_ASSET = "trace.pub"
 
     /** The owner's public key, which only a personal build carries. */
@@ -44,7 +49,7 @@ object Settings {
 
     /** Every file holding something the keyboard learned or recorded. */
     fun personalFiles(context: Context): List<File> =
-        listOf(MEMORY_FILE, "$MEMORY_FILE.tmp", TraceProvider.FILE)
+        listOf(MEMORY_FILE, "$MEMORY_FILE.tmp", MEMORY_SECRET_FILE, MEMORY_PUBLIC_FILE, TraceProvider.FILE)
             .map { File(context.filesDir, it) }
 }
 
@@ -77,6 +82,16 @@ class SettingsActivity : Activity() {
         setup()
         typing()
         learned()
+    }
+
+    /** A place to type without leaving the app, while working on the keyboard. */
+    private fun tryOut() = EditText(this).apply {
+        setHint(R.string.try_out)
+        inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE or
+            InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
+        minLines = TRY_OUT_LINES
+        gravity = Gravity.TOP
+        importantForAutofill = View.IMPORTANT_FOR_AUTOFILL_NO
     }
 
     private fun heading(text: Int) {
@@ -140,6 +155,7 @@ class SettingsActivity : Activity() {
         action(R.string.erase) { eraseEverything() }
         if (Settings.hasTraceKey(this)) {
             heading(R.string.development)
+            list.addView(tryOut())
             toggle(R.string.record_traces, Settings.TRACES)
             toggle(R.string.screenshots, Settings.SCREENSHOTS, false)
             val traces = File(filesDir, TraceProvider.FILE)
@@ -188,11 +204,13 @@ class SettingsActivity : Activity() {
         super.onActivityResult(request, result, data)
         val target: Uri = data?.data ?: return
         if (request != EXPORT || result != RESULT_OK) return
-        val memory = File(filesDir, Settings.MEMORY_FILE)
         guarded {
-            contentResolver.openOutputStream(target)?.use { out ->
-                if (memory.exists()) out.write(Vault.ofDevice().open(memory.readBytes()).toByteArray())
-            }
+            val memory = File(filesDir, Settings.MEMORY_FILE)
+            val key = File(filesDir, Settings.MEMORY_SECRET_FILE)
+            if (!memory.exists() || !key.exists()) return@guarded
+            val plain = Core.keyboard.openMemory(memory.readBytes(), Vault.ofDevice().open(key.readBytes()))
+            contentResolver.openOutputStream(target)?.use { it.write(plain) }
+            plain.fill(0)
         }
     }
 
@@ -213,6 +231,7 @@ class SettingsActivity : Activity() {
 
     private companion object {
         const val EXPORT = 1
+        const val TRY_OUT_LINES = 4
         const val TAILSCALE = "com.tailscale.ipn"
     }
 }

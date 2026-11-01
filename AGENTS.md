@@ -17,6 +17,7 @@ Synthboard is a privacy-first, offline Android swipe keyboard with a reusable op
 - Latest stable dependencies, each one justified. New external data or code is logged in `PROVENANCE.md`.
 - Low memory and optimised logic: flat storage, no allocation in hot paths, no linear scan where an index fits. Measure on the device.
 - It must never crash. No `unwrap`, no indexing, no panics in production paths; the FFI layer still guards every call. Loaders accept any bytes.
+- `unsafe` lives in `crates/synthboard-ffi/src/jni.rs` and nowhere else. Types that cross to Kotlin are declared with `wire_struct!` or `wire_enum!`, and the Kotlin is generated from them at build time.
 - Layouts and languages are data. AZERTY is the owner's layout, never a hard-wired assumption; QWERTY users are first-class. French and English stay active together and the language lean only tilts ranking.
 - Research a domain before building it. Finish features against a behaviour inventory; do not present a stage as an endpoint.
 - Keyboard product, library and weights from FUTO stay out of options, comparisons and dependencies. Its public swipe datasets are welcome.
@@ -47,7 +48,6 @@ The model is GrapheneOS: private by default and defence in depth.
 ```sh
 cargo test --workspace
 cargo clippy --workspace --all-targets
-cd crates/synthboard-ffi && boltffi generate kotlin   # after changing any #[data] type
 ./tools/test-shell.sh                                 # `record` only for an intended visual change
 cd fuzz && RUSTFLAGS="-Clink-arg=-Wl,-undefined,dynamic_lookup" cargo +nightly fuzz run fuzz_engine --sanitizer none -- -max_total_time=120
 cargo mutants --in-diff <diff>                        # surviving mutants need a test or a reason

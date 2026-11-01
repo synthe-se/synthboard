@@ -41,6 +41,8 @@ grep -q BIND_NOW "$scratch/dynamic" || fail "the library binds lazily"
 ! strings "$library" | grep -q "$HOME" || fail "the library names this machine's paths"
 
 cd "$root"
+elsewhere=$(grep -rl "unsafe " crates --include='*.rs' | grep -v 'crates/synthboard-ffi/src/jni.rs' || true)
+[ -z "$elsewhere" ] || fail "unsafe code outside the JNI door: $elsewhere"
 cargo deny check
 cargo vet --locked
 cargo audit -q

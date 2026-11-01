@@ -52,19 +52,36 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.17")
 }
 
-val generated = layout.buildDirectory.dir("boltffi")
+val generated = layout.buildDirectory.dir("native")
+val repository = rootDir.parentFile
 
-val boltffiPack = tasks.register<Exec>("boltffiPack") {
-    description = "Builds the Rust library and generates its Kotlin bindings."
-    workingDir = rootDir.parentFile.resolve("crates/synthboard-ffi")
+val nativeLibrary = tasks.register<Exec>("nativeLibrary") {
+    description = "Builds the Rust library for the phone."
+    workingDir = repository
+    val toolchain = androidComponents.sdkComponents.sdkDirectory.get().asFile
+        .resolve("ndk/${android.ndkVersion}/toolchains/llvm/prebuilt/darwin-x86_64/bin")
+    environment("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", toolchain.resolve("aarch64-linux-android34-clang").path)
+    // Page size for current phones, and no path of this machine in the library.
     environment(
-        "ANDROID_NDK_HOME",
-        androidComponents.sdkComponents.sdkDirectory.get().asFile.resolve("ndk/${android.ndkVersion}").path,
+        "RUSTFLAGS",
+        "-Clink-arg=-Wl,-z,max-page-size=16384 --remap-path-prefix=${System.getProperty("user.home")}=~",
     )
-    // Keeps this machine's paths out of the shipped library.
-    environment("RUSTFLAGS", "--remap-path-prefix=${System.getProperty("user.home")}=~")
-    commandLine("boltffi", "pack", "android", "--release")
-    outputs.dir(generated)
+    commandLine("cargo", "build", "--release", "--target", "aarch64-linux-android", "-p", "synthboard-ffi", "--lib")
+    outputs.upToDateWhen { false }
+}
+
+val nativeCopy = tasks.register<Copy>("nativeCopy") {
+    dependsOn(nativeLibrary)
+    from(repository.resolve("target/aarch64-linux-android/release/libsynthboard_ffi.so"))
+    into(generated.map { it.dir("jniLibs/arm64-v8a") })
+}
+
+val wireTypes = tasks.register<Exec>("wireTypes") {
+    description = "Generates the Kotlin side of the wire from the Rust types."
+    workingDir = repository
+    val output = generated.get().file("kotlin/WireTypes.kt").asFile
+    doFirst { output.parentFile.mkdirs() }
+    commandLine("cargo", "run", "-q", "-p", "synthboard-ffi", "--bin", "kotlin_wire", "--", output.path)
     outputs.upToDateWhen { false }
 }
 
@@ -74,5 +91,5 @@ android.sourceSets.getByName("main").apply {
 }
 
 tasks.named("preBuild") {
-    dependsOn(boltffiPack)
+    dependsOn(nativeCopy, wireTypes)
 }

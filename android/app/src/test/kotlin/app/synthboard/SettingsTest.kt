@@ -5,8 +5,10 @@ import android.content.Intent
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
+import android.text.InputType
 import android.view.View
 import android.view.ViewGroup
+import android.widget.EditText
 import android.widget.Button
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -102,9 +104,9 @@ class SettingsTest {
         val generator = KeyGenerator.getInstance("AES").apply { init(256) }
         val key = generator.generateKey()
         val vault = Vault { key }
-        val sealed = vault.seal("mon mot prive")
-        assertEquals("mon mot prive", vault.open(sealed))
-        assertFalse(String(sealed, Charsets.ISO_8859_1).contains("prive"))
+        val sealed = vault.seal("johnduff".toByteArray())
+        assertEquals("johnduff", String(vault.open(sealed)))
+        assertFalse(String(sealed, Charsets.ISO_8859_1).contains("johnduff"))
         var refused = false
         try {
             val other = generator.generateKey()
@@ -113,6 +115,19 @@ class SettingsTest {
             refused = true
         }
         assertTrue(refused)
+    }
+
+    @Test
+    fun a_personal_build_has_a_field_to_try_the_keyboard_in() {
+        val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
+        fun fields(view: View): List<EditText> = when (view) {
+            is EditText -> listOf(view)
+            is ViewGroup -> (0 until view.childCount).flatMap { fields(view.getChildAt(it)) }
+            else -> emptyList()
+        }
+        val found = fields(activity.window.decorView)
+        assertEquals(Settings.hasTraceKey(context), found.isNotEmpty())
+        found.forEach { assertTrue(it.inputType and InputType.TYPE_TEXT_FLAG_MULTI_LINE != 0) }
     }
 
     @Test
@@ -128,7 +143,7 @@ class SettingsTest {
     @Test
     fun the_memory_format_is_part_of_what_is_sealed() {
         val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
-        val sealed = Vault { key }.seal("mot")
+        val sealed = Vault { key }.seal("mot".toByteArray())
         val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
         cipher.init(
             javax.crypto.Cipher.DECRYPT_MODE,
