@@ -39,7 +39,7 @@ grep -q 'dataExtractionRules' "$scratch/manifest" || fail "no rule against data 
 exported=$(awk '/E: (activity|service|provider|receiver)/ { name = "" }
     /android:name\(/ { if (match($0, /="[^"]*"/)) name = substr($0, RSTART + 2, RLENGTH - 3) }
     /android:exported\(.*=(true|0xffffffff)/ { print name }' "$scratch/manifest" | sort | tr '\n' ' ')
-[ "$exported" = "app.synthboard.SettingsActivity app.synthboard.SynthboardService " ] ||
+[ "$exported" = "se.synthe.synthboard.SettingsActivity se.synthe.synthboard.SynthboardService " ] ||
     fail "unexpected exported components: $exported"
 
 signed_by_release_key "$apk" || fail "not signed with our key"

@@ -1,4 +1,4 @@
-package app.synthboard
+package se.synthe.synthboard
 
 import android.content.ComponentName
 import android.content.ContentProvider

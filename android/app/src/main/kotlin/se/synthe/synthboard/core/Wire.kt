@@ -1,4 +1,4 @@
-package app.synthboard.core
+package se.synthe.synthboard.core
 
 import java.nio.ByteBuffer
 import java.nio.ByteOrder

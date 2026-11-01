@@ -7,12 +7,12 @@ val minimumSdk = providers.gradleProperty("synthboard.minSdk").get().toInt()
 val targetedSdk = providers.gradleProperty("synthboard.targetSdk").get().toInt()
 
 android {
-    namespace = "app.synthboard"
+    namespace = "se.synthe.synthboard"
     compileSdk = targetedSdk
     ndkVersion = providers.gradleProperty("synthboard.ndkVersion").get()
 
     defaultConfig {
-        applicationId = "app.synthboard"
+        applicationId = "se.synthe.synthboard"
         minSdk = minimumSdk
         targetSdk = targetedSdk
         versionCode = 1

@@ -1,6 +1,6 @@
-package app.synthboard
+package se.synthe.synthboard
 
-import app.synthboard.core.Keyboard
+import se.synthe.synthboard.core.Keyboard
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 

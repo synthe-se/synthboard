@@ -42,7 +42,7 @@ fn keyboard() -> &'static Keyboard {
 /// # Safety
 /// Only the JVM calls this, with its environment and a direct buffer.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_app_synthboard_core_Native_address(env: Env, _class: Object, buffer: Object) -> i64 {
+pub unsafe extern "system" fn Java_se_synthe_synthboard_core_Native_address(env: Env, _class: Object, buffer: Object) -> i64 {
     // SAFETY: the table has this entry, of this type, as the specification fixes it.
     unsafe {
         let function = (*env).add(GET_DIRECT_BUFFER_ADDRESS).cast::<GetAddress>().read();
@@ -57,7 +57,7 @@ pub unsafe extern "system" fn Java_app_synthboard_core_Native_address(env: Env, 
 /// # Safety
 /// Only Kotlin calls this, with live buffers it owns, on this thread, of these sizes.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_app_synthboard_core_Native_call(
+pub unsafe extern "system" fn Java_se_synthe_synthboard_core_Native_call(
     _env: Env,
     _class: Object,
     input: i64,
@@ -89,7 +89,7 @@ pub unsafe extern "system" fn Java_app_synthboard_core_Native_call(
 /// # Safety
 /// Only Kotlin calls this, with a live buffer it owns, of this size.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_app_synthboard_core_Native_preview(
+pub unsafe extern "system" fn Java_se_synthe_synthboard_core_Native_preview(
     _env: Env,
     _class: Object,
     output: i64,
@@ -111,7 +111,7 @@ pub unsafe extern "system" fn Java_app_synthboard_core_Native_preview(
 /// # Safety
 /// Only Kotlin calls this, on the same thread, with a buffer of the length `call` returned.
 #[unsafe(no_mangle)]
-pub unsafe extern "system" fn Java_app_synthboard_core_Native_take(_env: Env, _class: Object, output: i64) {
+pub unsafe extern "system" fn Java_se_synthe_synthboard_core_Native_take(_env: Env, _class: Object, output: i64) {
     REPLY.with_borrow_mut(|reply| {
         // SAFETY: Kotlin sized this buffer to the reply.
         unsafe { std::ptr::copy_nonoverlapping(reply.as_ptr(), output as *mut u8, reply.len()) };

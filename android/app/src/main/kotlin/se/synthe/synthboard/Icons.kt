@@ -1,9 +1,9 @@
-package app.synthboard
+package se.synthe.synthboard
 
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Path
-import app.synthboard.core.Icon
+import se.synthe.synthboard.core.Icon
 
 /** One family of key icons: same grid, same stroke, drawn around a centre. */
 object Icons {

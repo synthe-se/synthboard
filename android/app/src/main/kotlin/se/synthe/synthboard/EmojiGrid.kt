@@ -1,4 +1,4 @@
-package app.synthboard
+package se.synthe.synthboard
 
 import android.content.Context
 import android.graphics.Canvas
@@ -9,11 +9,11 @@ import android.graphics.RectF
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.widget.OverScroller
-import app.synthboard.core.EmojiItem
-import app.synthboard.core.Event
-import app.synthboard.core.Icon
-import app.synthboard.core.LETTERS_LABEL
-import app.synthboard.core.SKIN_TONES
+import se.synthe.synthboard.core.EmojiItem
+import se.synthe.synthboard.core.Event
+import se.synthe.synthboard.core.Icon
+import se.synthe.synthboard.core.LETTERS_LABEL
+import se.synthe.synthboard.core.SKIN_TONES
 
 /**
  * The scrolling emoji panel inside the keyboard view. Long press relies on

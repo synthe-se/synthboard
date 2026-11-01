@@ -1,10 +1,10 @@
-package app.synthboard
+package se.synthe.synthboard
 
-import app.synthboard.core.Command
-import app.synthboard.core.Event
-import app.synthboard.core.Step
-import app.synthboard.core.WireReader
-import app.synthboard.core.WireWriter
+import se.synthe.synthboard.core.Command
+import se.synthe.synthboard.core.Event
+import se.synthe.synthboard.core.Step
+import se.synthe.synthboard.core.WireReader
+import se.synthe.synthboard.core.WireWriter
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.nio.ByteBuffer

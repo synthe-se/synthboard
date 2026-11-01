@@ -1,7 +1,7 @@
-package app.synthboard
+package se.synthe.synthboard
 
-import app.synthboard.core.DrawnKey
-import app.synthboard.core.Icon
+import se.synthe.synthboard.core.DrawnKey
+import se.synthe.synthboard.core.Icon
 
 /** A keyboard as the core would describe it, for testing the shell alone. */
 object ShellFixtures {

@@ -1,4 +1,4 @@
-package app.synthboard
+package se.synthe.synthboard
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -12,16 +12,16 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
-import app.synthboard.core.BAR_SLOTS
-import app.synthboard.core.Command
-import app.synthboard.core.DrawnKey
-import app.synthboard.core.EmojiItem
-import app.synthboard.core.Event
-import app.synthboard.core.Icon
-import app.synthboard.core.POPUP_HEIGHT_DP
-import app.synthboard.core.SEARCH_CELLS
-import app.synthboard.core.SLOT_CENTERS
-import app.synthboard.core.ShiftLook
+import se.synthe.synthboard.core.BAR_SLOTS
+import se.synthe.synthboard.core.Command
+import se.synthe.synthboard.core.DrawnKey
+import se.synthe.synthboard.core.EmojiItem
+import se.synthe.synthboard.core.Event
+import se.synthe.synthboard.core.Icon
+import se.synthe.synthboard.core.POPUP_HEIGHT_DP
+import se.synthe.synthboard.core.SEARCH_CELLS
+import se.synthe.synthboard.core.SLOT_CENTERS
+import se.synthe.synthboard.core.ShiftLook
 
 /** The corners of keys and of everything drawn like them. */
 internal const val KEY_RADIUS_DP = 8f

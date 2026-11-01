@@ -277,14 +277,15 @@ androidx.autofill, androidx.core, androidx.annotation, androidx.collection, andr
 
 Kotlin standard library 2.2.10
   Licence: Apache-2.0
-  JetBrains s.r.o. and Kotlin Programming Language contributors
+  Kotlin Team, JetBrains
 
 == Data ==
 
 Sources and licences of the data a full build packs into its assets, as logged
 in the repository's PROVENANCE.md.
 
-Word lists: HeliBoard word lists, GPL-3.0
+Word lists: HeliBoard word lists, packaged under GPL-3.0, from AOSP LatinIME
+  (English) and a Leipzig-derived list (French)
 Swipe model: trained on swipe.futo.org (MIT) and HeliBoard gesture data
   (CC BY-SA 4.0), so derived from CC BY-SA 4.0 data
 French verb forms: Lexique 3.83, CC BY-SA 4.0

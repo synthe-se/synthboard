@@ -1,4 +1,4 @@
-package app.synthboard
+package se.synthe.synthboard
 
 import android.content.SharedPreferences
 import android.graphics.Paint
@@ -17,13 +17,13 @@ import android.view.inputmethod.InlineSuggestionsRequest
 import android.view.inputmethod.InlineSuggestionsResponse
 import android.view.inputmethod.InputMethodManager
 import android.widget.FrameLayout
-import app.synthboard.core.Command
-import app.synthboard.core.EmojiItem
-import app.synthboard.core.Event
-import app.synthboard.core.Field
-import app.synthboard.core.Haptic
-import app.synthboard.core.Icon
-import app.synthboard.core.KEY_BYTES
+import se.synthe.synthboard.core.Command
+import se.synthe.synthboard.core.EmojiItem
+import se.synthe.synthboard.core.Event
+import se.synthe.synthboard.core.Field
+import se.synthe.synthboard.core.Haptic
+import se.synthe.synthboard.core.Icon
+import se.synthe.synthboard.core.KEY_BYTES
 import java.io.File
 import java.io.FileOutputStream
 

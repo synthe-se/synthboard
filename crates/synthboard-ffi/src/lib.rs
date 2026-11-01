@@ -37,6 +37,7 @@ wire_enum! {
         LoadMemory { sealed: Option<Vec<u8>>, secret: Vec<u8> },
         SealMemory,
         OpenMemory { sealed: Vec<u8>, secret: Vec<u8> },
+        ImportMemory { text: Vec<u8>, public: Vec<u8> },
     }
 }
 
@@ -154,6 +155,7 @@ impl Keyboard {
             Call::LoadMemory { sealed, secret } => Reply::Flag { on: self.load_memory(sealed.as_deref(), secret) },
             Call::SealMemory => Reply::Bytes { bytes: self.seal_memory() },
             Call::OpenMemory { sealed, secret } => Reply::Bytes { bytes: open_memory(&sealed, secret) },
+            Call::ImportMemory { text, public } => Reply::Bytes { bytes: self.import_memory(text, public) },
         }
     }
 
@@ -208,6 +210,18 @@ impl Keyboard {
 
     /// Seals memory the engine wants saved, outside its lock. Nothing to do
     /// gives nothing: a later save may already have taken it.
+    /// Seals words exported earlier to this phone's key, keeping what parses. Nothing
+    /// comes back if the key is not one, and the shell then leaves memory alone.
+    fn import_memory(&self, text: Vec<u8>, public: Vec<u8>) -> Vec<u8> {
+        let text = Zeroizing::new(text);
+        let Ok(key) = <[u8; KEY_BYTES]>::try_from(public) else {
+            return Vec::new();
+        };
+        let read = self.lock().memory_reader();
+        let (memory, _) = guarded(|| Some(read(&String::from_utf8_lossy(&text))));
+        memory.and_then(|memory| sealed_memory(&(Arc::new(memory), key))).unwrap_or_default()
+    }
+
     fn seal_memory(&self) -> Vec<u8> {
         let job = self.lock().take_unsaved();
         job.as_ref().and_then(sealed_memory).unwrap_or_default()
@@ -323,6 +337,21 @@ mod tests {
         let sealed = synthboard_seal::seal(&key, b"johnduff").unwrap_or_default();
         let call = Call::OpenMemory { sealed, secret: secret.to_vec() };
         assert_eq!(answer(&keyboard, &call), Some(Reply::Bytes { bytes: b"johnduff".to_vec() }));
+    }
+
+    #[test]
+    fn imported_words_open_with_the_key_of_this_phone() {
+        let keyboard = Keyboard::new();
+        let keys = new_memory_keys();
+        let (secret, public) = keys.split_at(KEY_BYTES);
+        let sealed = keyboard.import_memory(b"bonjour\t3\nnot a line\n".to_vec(), public.to_vec());
+        let text = open_memory(&sealed, secret.to_vec());
+        assert_eq!(text, b"bonjour\t3\n");
+    }
+
+    #[test]
+    fn an_import_needs_a_real_key() {
+        assert_eq!(Keyboard::new().import_memory(b"bonjour\t3\n".to_vec(), vec![1, 2]), Vec::<u8>::new());
     }
 
     #[test]

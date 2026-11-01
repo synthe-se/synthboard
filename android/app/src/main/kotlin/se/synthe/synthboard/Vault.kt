@@ -1,4 +1,4 @@
-package app.synthboard
+package se.synthe.synthboard
 
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties

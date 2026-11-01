@@ -1,4 +1,4 @@
-package app.synthboard
+package se.synthe.synthboard
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
@@ -7,10 +7,10 @@ import android.view.MotionEvent
 import android.view.View
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import app.synthboard.core.Command
-import app.synthboard.core.EmojiItem
-import app.synthboard.core.Event
-import app.synthboard.core.ShiftLook
+import se.synthe.synthboard.core.Command
+import se.synthe.synthboard.core.EmojiItem
+import se.synthe.synthboard.core.Event
+import se.synthe.synthboard.core.ShiftLook
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

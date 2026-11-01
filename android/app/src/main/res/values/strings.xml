@@ -11,6 +11,9 @@
     <string name="height">Keyboard height: %1$d%%</string>
     <string name="learned">What the keyboard learned</string>
     <string name="export">Export my words</string>
+    <string name="import_words">Import my words</string>
+    <string name="import_done">Words imported. They replace the ones here.</string>
+    <string name="import_failed">Import failed. Open the keyboard once, then try again.</string>
     <string name="erase">Erase everything</string>
     <string name="erased">Erased. The keyboard starts afresh next time it opens.</string>
     <string name="development">Development</string>

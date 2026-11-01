@@ -1,4 +1,4 @@
-package app.synthboard.core
+package se.synthe.synthboard.core
 
 import java.nio.ByteBuffer
 
@@ -98,6 +98,9 @@ class Keyboard {
 
     fun openMemory(sealed: ByteArray, secret: ByteArray): ByteArray =
         (send(Call.OpenMemory(sealed, secret)) as Reply.Bytes).bytes
+
+    fun importMemory(text: ByteArray, public: ByteArray): ByteArray =
+        (send(Call.ImportMemory(text, public)) as Reply.Bytes).bytes
 
     private companion object {
         /** Holds any usual step, keys included: a larger reply goes through `take`. */

@@ -11,6 +11,9 @@
     <string name="height">Hauteur du clavier : %1$d %%</string>
     <string name="learned">Ce que le clavier a appris</string>
     <string name="export">Exporter mes mots</string>
+    <string name="import_words">Importer mes mots</string>
+    <string name="import_done">Mots importés. Ils remplacent ceux qui étaient ici.</string>
+    <string name="import_failed">Import impossible. Ouvre le clavier une fois, puis réessaie.</string>
     <string name="erase">Tout effacer</string>
     <string name="erased">Effacé. Le clavier repart de zéro à sa prochaine ouverture.</string>
     <string name="development">Développement</string>

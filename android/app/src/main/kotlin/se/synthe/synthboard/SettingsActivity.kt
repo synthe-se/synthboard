@@ -1,4 +1,4 @@
-package app.synthboard
+package se.synthe.synthboard
 
 import android.app.Activity
 import android.app.AlertDialog
@@ -20,7 +20,7 @@ import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
-import app.synthboard.core.Event
+import se.synthe.synthboard.core.Event
 import java.io.File
 import java.io.IOException
 
@@ -172,6 +172,12 @@ open class SettingsActivity : Activity() {
                 EXPORT,
             )
         }
+        action(R.string.import_words) {
+            startActivityForResult(
+                Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),
+                IMPORT,
+            )
+        }
         action(R.string.erase) { eraseEverything() }
         if (Settings.hasTraceKey(this)) {
             heading(R.string.development)
@@ -229,7 +235,12 @@ open class SettingsActivity : Activity() {
     override fun onActivityResult(request: Int, result: Int, data: Intent?) {
         super.onActivityResult(request, result, data)
         val target: Uri = data?.data ?: return
-        if (request != EXPORT || result != RESULT_OK) return
+        if (result != RESULT_OK) return
+        if (request == IMPORT) {
+            guarded { importWords(target) }
+            return
+        }
+        if (request != EXPORT) return
         guarded {
             val memory = File(filesDir, Settings.MEMORY_FILE)
             val key = File(filesDir, Settings.MEMORY_SECRET_FILE)
@@ -238,6 +249,22 @@ open class SettingsActivity : Activity() {
             contentResolver.openOutputStream(target)?.use { it.write(plain) }
             plain.fill(0)
         }
+    }
+
+    /** Replaces memory with exported words. The keyboard must have opened once, for its keys. */
+    private fun importWords(source: Uri) {
+        val public = File(filesDir, Settings.MEMORY_PUBLIC_FILE)
+        val text = contentResolver.openInputStream(source)?.use { it.readBytes() } ?: return
+        val sealed = if (public.exists()) Core.keyboard.importMemory(text, public.readBytes()) else ByteArray(0)
+        text.fill(0)
+        if (sealed.isEmpty()) {
+            list.addView(TextView(this).apply { setText(R.string.import_failed) })
+            return
+        }
+        val temporary = File(filesDir, Settings.MEMORY_FILE + ".tmp")
+        temporary.writeBytes(sealed)
+        temporary.renameTo(File(filesDir, Settings.MEMORY_FILE))
+        list.addView(TextView(this).apply { setText(R.string.import_done) })
     }
 
     private fun toggle(label: Int, key: String, default: Boolean = true) {
@@ -257,6 +284,7 @@ open class SettingsActivity : Activity() {
 
     private companion object {
         const val EXPORT = 1
+        const val IMPORT = 2
         const val TRY_OUT_LINES = 4
         const val GUTTER_DP = 20
         const val HEADING_SP = 15f
