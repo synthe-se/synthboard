@@ -289,12 +289,12 @@ fn run_personal(text: &str, params: &Params, gestures: &[Gesture], neural: Optio
                         let tilted =
                             |word: &str| sentence(word) + factor * synthboard_core::language_tilt(lexicon.languages(word), leaning);
                         let found = decode_in_context(layout, &lexicon, &samples, &lean, synthswipe::POOL, tilted).unwrap_or_default();
-                        let blended = reading.blend(&lexicon, &found, &lean, synthswipe::NETWORK_WEIGHT, synthswipe::FREQUENCY_WEIGHT, tilted);
+                        let blended = reading.blend(&lexicon, &found, &lean, synthswipe::Mix::shipped(&found), tilted);
                         *slot += usize::from(blended.first().is_some_and(|c| c.surface.to_lowercase() == truth));
                     }
                 }
                 let read = reading.map(|reading| {
-                    reading.blend(&lexicon, &ranked, &lean, synthswipe::NETWORK_WEIGHT, synthswipe::FREQUENCY_WEIGHT, |_| 0.0)
+                    reading.blend(&lexicon, &ranked, &lean, synthswipe::Mix::shipped(&ranked), |_| 0.0)
                 });
                 if read.and_then(|words| words.first().map(|c| c.surface.to_lowercase())).is_some_and(|word| word == truth) {
                     blended += 1;

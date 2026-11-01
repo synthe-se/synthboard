@@ -6,12 +6,13 @@
 //! data. The running of the model is behind [`Encoder`], which keeps this crate
 //! free of any runtime. The model comes from `tools/pack-neural.sh`.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::sync::OnceLock;
 
 use crate::geometry::Sample;
 use crate::layout::Layout;
-use crate::lexicon::{Lexicon, fold};
+use crate::lexicon::{Lexicon, apostrophe_path, fold};
 use crate::shark2::{Candidate, Params, best_first};
 
 /// Frames a gesture is resampled to.
@@ -76,6 +77,33 @@ const HEAD_VALUES: usize = FIRST_WEIGHTS + KEY_DIMENSION + SECOND_WEIGHTS + KEY_
 const F32_BYTES: usize = size_of::<f32>();
 /// Bytes of the key head in a model file.
 pub const MODEL_HEAD_BYTES: usize = HEAD_VALUES * F32_BYTES;
+
+/// How the network's reading counts in a blend.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Mix {
+    /// Weight of the network against the geometric score.
+    pub weight: f32,
+    /// Weight of a word's frequency in what the network says of it.
+    pub frequency: f32,
+    /// Where a word only the network found starts. Across lexicons blended
+    /// together it must be one number, or their scores cannot be compared.
+    pub floor: f32,
+}
+
+impl Mix {
+    /// The shipped weights, starting from the worst word the geometry kept.
+    #[must_use]
+    pub fn shipped(geometry: &[Candidate<'_>]) -> Self {
+        Self { weight: NETWORK_WEIGHT, frequency: FREQUENCY_WEIGHT, floor: floor_of(geometry) }
+    }
+}
+
+/// The worst word the geometry kept, or 0 if it kept none.
+#[must_use]
+pub fn floor_of(geometry: &[Candidate<'_>]) -> f32 {
+    let floor = geometry.iter().map(|candidate| candidate.score).fold(f32::INFINITY, f32::min);
+    if floor.is_finite() { floor } else { 0.0 }
+}
 
 /// What the geometry may skip when the network reads the gesture too.
 #[must_use]
@@ -282,7 +310,8 @@ fn log_softmax(row: &mut [f32]) {
 
 /// Beyond this gap in nats the smaller term no longer shows in a sum.
 const NEGLIGIBLE: f32 = 12.0;
-/// Steps of the table per nat. The error stays below 1e-3 nat, far under what ranks words.
+/// Steps of the table per nat. The worst error is half a step at the steepest slope,
+/// 0.0039 nat at a gap of 0, which is far under what ranks words.
 const STEPS_PER_NAT: f32 = 64.0;
 
 /// `ln(1 + e^-gap)`, sampled: the search adds logs for every hypothesis of every
@@ -296,7 +325,7 @@ fn gap_table() -> &'static [f32] {
     })
 }
 
-/// Adds two log-probabilities.
+/// The log of the sum of two probabilities given as logs.
 fn log_add(a: f32, b: f32) -> f32 {
     let (high, low) = if a > b { (a, b) } else { (b, a) };
     let gap = high - low;
@@ -430,16 +459,24 @@ impl Reading {
             })
             .collect();
         found.sort_by(best_first);
-        found.dedup_by_key(|candidate| candidate.surface);
+        // A word with an apostrophe stands on two nodes, and the better one speaks for it.
+        let mut seen = HashSet::new();
+        found.retain(|candidate| seen.insert(candidate.surface));
         found.truncate(POOL);
         found
     }
 
-    /// The log-probability of one word, for a word the search let go. A word
+    /// The log-probability of one word, for a word the search let go: the better
+    /// of its paths, with and without the apostrophe, as in [`Self::words`]. A word
     /// through a key the model does not know gets negative infinity.
     #[must_use]
     pub fn word_score(&self, word: &str) -> f32 {
-        let classes: Option<Vec<usize>> = fold(word).into_iter().map(class_of).collect();
+        let plain = self.path_score(&fold(word));
+        apostrophe_path(word).map_or(plain, |keys| plain.max(self.path_score(&keys)))
+    }
+
+    fn path_score(&self, keys: &[char]) -> f32 {
+        let classes: Option<Vec<usize>> = keys.iter().copied().map(class_of).collect();
         let Some(classes) = classes else {
             return f32::NEG_INFINITY;
         };
@@ -468,21 +505,24 @@ impl Reading {
     }
 
     /// Ranks the union of what the geometry and the network found. A word only
-    /// the network found has no geometric score, so it starts from the worst one
-    /// the geometry kept, with its own context.
+    /// the network found has no geometric score, so it starts from `mix.floor`,
+    /// with its own context.
     #[must_use]
     pub fn blend<'lexicon>(
         &self,
         lexicon: &'lexicon Lexicon,
         geometry: &[Candidate<'lexicon>],
         params: &Params,
-        weight: f32,
-        frequency: f32,
+        mix: Mix,
         context: impl Fn(&str) -> f32,
     ) -> Vec<Candidate<'lexicon>> {
+        let Mix { weight, frequency, floor } = mix;
         let found = self.words(lexicon, frequency);
-        let floor = geometry.iter().map(|candidate| candidate.score).fold(f32::INFINITY, f32::min);
-        let floor = if floor.is_finite() { floor } else { 0.0 };
+        // Zero weight on a word the model cannot read must leave its score alone.
+        let weighted = |reading: f32| {
+            let part = weight * reading;
+            if part.is_nan() { 0.0 } else { part }
+        };
         let mut blended: Vec<Candidate<'lexicon>> = geometry
             .iter()
             .map(|candidate| {
@@ -493,13 +533,13 @@ impl Reading {
                         || self.word_score(candidate.surface) + frequency * lexicon.weight(candidate.surface),
                         |word| word.score,
                     );
-                Candidate { surface: candidate.surface, score: candidate.score + weight * reading }
+                Candidate { surface: candidate.surface, score: candidate.score + weighted(reading) }
             })
             .collect();
         for word in &found {
             if !geometry.iter().any(|candidate| candidate.surface == word.surface) {
                 let sentence = params.context_weight * context(word.surface);
-                blended.push(Candidate { surface: word.surface, score: floor + sentence + weight * word.score });
+                blended.push(Candidate { surface: word.surface, score: floor + sentence + weighted(word.score) });
             }
         }
         blended.sort_by(best_first);
@@ -514,6 +554,10 @@ mod tests {
 
     use super::*;
     use crate::layout::Key;
+
+    fn mix(geometry: &[Candidate<'_>], weight: f32, frequency: f32) -> Mix {
+        Mix { weight, frequency, floor: floor_of(geometry) }
+    }
 
     /// Rows with one class leading each frame, in turn.
     fn reading_of(keys: &str) -> Reading {
@@ -600,6 +644,51 @@ mod tests {
     }
 
     #[test]
+    fn a_word_on_two_paths_comes_once_with_its_better_score() {
+        let lexicon = Lexicon::new([("c'est", 100.0), ("cet", 100.0)]);
+        for spelled in ["c'est", "cest"] {
+            let reading = reading_of(spelled);
+            let found = reading.words(&lexicon, 0.0);
+            let same: Vec<_> = found.iter().filter(|candidate| candidate.surface == "c'est").collect();
+            assert_eq!(same.len(), 1, "{spelled}");
+            assert!((same[0].score - reading.word_score("c'est")).abs() < 1e-3, "{spelled}");
+        }
+    }
+
+    #[test]
+    fn a_blend_can_start_from_another_lexicons_floor() {
+        let lexicon = lexicon();
+        let params = Params::default();
+        let geometry: [Candidate<'_>; 0] = [];
+        let mix = Mix { weight: 1.0, frequency: 0.0, floor: -40.0 };
+        let reading = reading_of("cat");
+        let blended = reading.blend(&lexicon, &geometry, &params, mix, |_| 0.0);
+        let found = blended.iter().find(|candidate| candidate.surface == "cat").unwrap();
+        assert!((found.score - (-40.0 + reading.word_score("cat"))).abs() < 1e-3);
+    }
+
+    #[test]
+    fn no_geometry_gives_a_floor_of_zero() {
+        assert_eq!(floor_of(&[]), 0.0);
+        assert_eq!(floor_of(&[Candidate { surface: "a", score: -3.0 }, Candidate { surface: "b", score: -1.0 }]), -3.0);
+    }
+
+    #[test]
+    fn the_shipped_mix_is_the_tuned_one() {
+        let mix = Mix::shipped(&[Candidate { surface: "a", score: -3.0 }]);
+        assert_eq!((mix.weight, mix.frequency, mix.floor), (NETWORK_WEIGHT, FREQUENCY_WEIGHT, -3.0));
+    }
+
+    #[test]
+    fn no_weight_on_an_unreadable_word_leaves_its_score() {
+        let lexicon = Lexicon::new([("cat1", 100.0)]);
+        let geometry = [Candidate { surface: "cat1", score: 5.0 }];
+        let params = Params::default();
+        let blended = reading_of("cat").blend(&lexicon, &geometry, &params, mix(&geometry, 0.0, 0.0), |_| 0.0);
+        assert_eq!(blended.first().map(|candidate| candidate.score), Some(5.0));
+    }
+
+    #[test]
     fn a_word_outside_the_keys_of_the_model_scores_nothing() {
         assert_eq!(reading_of("cat").word_score("cat1"), f32::NEG_INFINITY);
     }
@@ -609,7 +698,7 @@ mod tests {
         let lexicon = lexicon();
         let geometry = [Candidate { surface: "car", score: 5.0 }];
         let params = Params::default();
-        let blended = reading_of("cat").blend(&lexicon, &geometry, &params, 1.0, 0.0, |_| 0.0);
+        let blended = reading_of("cat").blend(&lexicon, &geometry, &params, mix(&geometry, 1.0, 0.0), |_| 0.0);
         assert_eq!(blended.first().map(|candidate| candidate.surface), Some("cat"));
         assert!(blended.iter().any(|candidate| candidate.surface == "car"));
     }
@@ -619,7 +708,7 @@ mod tests {
         let lexicon = lexicon();
         let geometry = [Candidate { surface: "car", score: 5.0 }, Candidate { surface: "ou", score: 1.0 }];
         let params = Params::default();
-        let blended = reading_of("cat").blend(&lexicon, &geometry, &params, 0.0, 0.0, |_| 0.0);
+        let blended = reading_of("cat").blend(&lexicon, &geometry, &params, mix(&geometry, 0.0, 0.0), |_| 0.0);
         assert_eq!(blended.first().map(|candidate| candidate.surface), Some("car"));
     }
 
@@ -629,7 +718,7 @@ mod tests {
         let geometry = [Candidate { surface: "ou", score: 1.0 }];
         let params = Params { context_weight: 1.0, ..Params::default() };
         let lift = |word: &str| if word == "cart" { 90.0 } else { 0.0 };
-        let blended = reading_of("cart").blend(&lexicon, &geometry, &params, 0.0, 0.0, lift);
+        let blended = reading_of("cart").blend(&lexicon, &geometry, &params, mix(&geometry, 0.0, 0.0), lift);
         assert_eq!(blended.first().map(|candidate| candidate.surface), Some("cart"));
     }
 
@@ -738,7 +827,7 @@ mod tests {
         let params = Params { context_weight: 2.0, ..Params::default() };
         let reading = reading_of("cat");
         let geometry = [Candidate { surface: "car", score: 5.0 }, Candidate { surface: "cat", score: 3.0 }];
-        let blended = reading.blend(&lexicon, &geometry, &params, 0.75, 0.25, |_| 7.0);
+        let blended = reading.blend(&lexicon, &geometry, &params, mix(&geometry, 0.75, 0.25), |_| 7.0);
         let score = |word: &str| blended.iter().find(|candidate| candidate.surface == word).unwrap().score;
         let weight = |word: &str| lexicon.weight(word);
         assert_eq!(weight("cat"), 100.0);
@@ -844,6 +933,17 @@ mod tests {
         assert_eq!((lean.refine, lean.rerank, lean.coarse_points), (LEAN_REFINE, LEAN_RERANK, LEAN_COARSE_POINTS));
         assert_eq!(lean.lambda, params.lambda);
         assert_eq!(lean.context_weight, params.context_weight * LEAN_CONTEXT_BOOST);
+    }
+
+    #[test]
+    fn the_table_keeps_the_error_it_states() {
+        const STATED: f32 = 0.0039;
+        let worst = (0..1200_u16).map(|step| {
+            let gap = f32::from(step) / 100.0;
+            (log_add(0.0, -gap) - (-gap).exp().ln_1p()).abs()
+        });
+        let worst = worst.fold(0.0, f32::max);
+        assert!(worst <= STATED + 1e-4, "{worst}");
     }
 
     #[test]

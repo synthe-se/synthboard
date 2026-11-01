@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use synthswipe::{Encoder, FREQUENCY_WEIGHT, Key, Layout, Lexicon, MODEL_HEAD_BYTES, NETWORK_WEIGHT, Neural, Params, Sample, split_model};
+use synthswipe::{Encoder, Key, Layout, Lexicon, MODEL_HEAD_BYTES, Mix, Neural, Params, Sample, split_model};
 
 /// Writes hostile values where the model's output goes.
 #[derive(Debug)]
@@ -28,7 +28,7 @@ fuzz_target!(|data: &[u8]| {
     let samples: Vec<Sample> = values.chunks_exact(3).map(|p| Sample { x: p[0], y: p[1], t_ms: p[2] as u32 }).collect();
     let lexicon = Lexicon::new([("cafe", 100.0), ("bac", 60.0), ("c'est", 90.0)]);
     if let Some(reading) = neural.read(&layout, &samples) {
-        let _ = reading.blend(&lexicon, &[], &Params::default(), NETWORK_WEIGHT, FREQUENCY_WEIGHT, |_| 0.0);
+        let _ = reading.blend(&lexicon, &[], &Params::default(), Mix::shipped(&[]), |_| 0.0);
         let _ = reading.word_score("cafe");
     }
 });

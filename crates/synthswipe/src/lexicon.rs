@@ -95,7 +95,7 @@ pub(crate) fn raw_keys(word: &str) -> Vec<char> {
 
 /// The keys of a word for someone who swipes through the apostrophe key, which
 /// is the spelling exactly: `c'est` is `c ' e s t`. Words without one have none.
-fn apostrophe_path(word: &str) -> Option<Vec<char>> {
+pub(crate) fn apostrophe_path(word: &str) -> Option<Vec<char>> {
     let mut keys = keys_of(word, true);
     keys.dedup();
     keys.contains(&APOSTROPHE).then_some(keys)

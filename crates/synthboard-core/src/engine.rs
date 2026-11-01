@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use synthboard_seal::KEY_BYTES;
-use synthswipe::{Candidate, best_first, fits_gesture, FREQUENCY_WEIGHT, NETWORK_WEIGHT, Neural, POOL, lean, fold, Affinities, Grammar, Layout, Lexicon, Params, signature, signature_distance, SENTENCE_START, Sample, correct, decode_in_context, tokens};
+use synthswipe::{Candidate, best_first, fits_gesture, Mix, Neural, POOL, Reading, lean, fold, Affinities, Grammar, Layout, Lexicon, Params, signature, signature_distance, SENTENCE_START, Sample, correct, decode_in_context, tokens};
 use unicode_segmentation::UnicodeSegmentation;
 use zeroize::Zeroize;
 
@@ -629,31 +629,49 @@ impl Decoding {
         found.unwrap_or_else(|| self.lexicon.surface(lower).unwrap_or(lower).to_owned())
     }
 
+    fn allowed(&self, candidate: &Candidate<'_>) -> bool {
+        !self.memory.is_blocked(candidate.surface)
+    }
+
+    /// What the geometry finds. A blocked word costs no slot: it goes before the cut.
+    fn geometry<'lexicon>(&self, lexicon: &'lexicon Lexicon, path: &[Sample], params: &Params, pool: usize) -> Vec<Candidate<'lexicon>> {
+        let asked = pool + self.memory.blocked_count();
+        let mut found = decode_in_context(&self.layout, lexicon, path, params, asked, |word| self.context(word)).unwrap_or_default();
+        found.retain(|candidate| self.allowed(candidate));
+        found.truncate(pool);
+        found
+    }
+
+    /// Adds the network's reading to what the geometry found, if there is one.
+    fn blended<'lexicon>(
+        &self,
+        lexicon: &'lexicon Lexicon,
+        found: Vec<Candidate<'lexicon>>,
+        reading: Option<&Reading>,
+        params: &Params,
+        mix: Mix,
+    ) -> Vec<Candidate<'lexicon>> {
+        let Some(reading) = reading else {
+            return found;
+        };
+        let mut blended = reading.blend(lexicon, &found, params, mix, |word| self.context(word));
+        blended.retain(|candidate| self.allowed(candidate));
+        blended
+    }
+
     fn rank(&self, path: &[Sample]) -> Vec<String> {
-        let context = |word: &str| self.context(word);
         let extra = self.memory.extra_words();
         let wanted = SUGGESTIONS + self.retry.as_ref().map_or(0, |retry| retry.words.len());
         let reading = self.neural.as_ref().and_then(|neural| neural.read(&self.layout, path));
         let pool = if reading.is_some() { wanted.max(POOL) } else { wanted };
         let params = if reading.is_some() { lean(&self.params) } else { self.params };
-        // A blocked word costs no slot: it goes before anything is cut.
-        let allowed = |candidate: &Candidate<'_>| !self.memory.is_blocked(candidate.surface);
-        let read = |lexicon| {
-            let mut found = decode_in_context(&self.layout, lexicon, path, &params, pool + self.memory.blocked_count(), context)
-                .unwrap_or_default();
-            found.retain(allowed);
-            found.truncate(pool);
-            let mut read = match &reading {
-                Some(reading) => reading.blend(lexicon, &found, &params, NETWORK_WEIGHT, FREQUENCY_WEIGHT, context),
-                None => found,
-            };
-            read.retain(allowed);
-            read
-        };
-        let mut ranked = read(&self.lexicon);
+        let found = self.geometry(&self.lexicon, path, &params, pool);
+        let mix = Mix::shipped(&found);
+        let mut ranked = self.blended(&self.lexicon, found, reading.as_ref(), &params, mix);
         ranked.truncate(wanted);
         if let Some(extra) = &extra {
-            ranked.extend(read(extra));
+            let found = self.geometry(extra, path, &params, pool);
+            ranked.extend(self.blended(extra, found, reading.as_ref(), &params, mix));
             ranked.sort_by(best_first);
             ranked.truncate(wanted);
         }
@@ -3651,6 +3669,19 @@ mod tests {
         rig.swipe("bonjour");
         assert_eq!(runs.load(Ordering::Relaxed), 1);
         assert_ne!(rig.text, "");
+    }
+
+    #[test]
+    fn a_learned_word_never_outranks_the_lexicon_for_lack_of_geometry() {
+        let mut rig = Rig::new(TEXT_FIELD);
+        with_network(&mut rig, true);
+        rig.send(Event::Neural { deciding: true });
+        let memory = Arc::make_mut(&mut rig.engine.memory);
+        for _ in 0..2 {
+            memory.learn("<s>", "qqqq", |_| false);
+        }
+        rig.swipe("bonjour");
+        assert_eq!(rig.text.to_lowercase(), "bonjour");
     }
 
     #[test]
