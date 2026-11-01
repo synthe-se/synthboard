@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 use crate::geometry::Sample;
 use crate::layout::Layout;
 use crate::lexicon::{Lexicon, fold};
-use crate::shark2::{Candidate, Params};
+use crate::shark2::{Candidate, Params, best_first};
 
 /// Frames a gesture is resampled to.
 pub const FRAMES: usize = 64;
@@ -429,7 +429,7 @@ impl Reading {
                     .map(move |entry| Candidate { surface: entry.surface, score: score + frequency * entry.weight })
             })
             .collect();
-        found.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.surface.cmp(b.surface)));
+        found.sort_by(best_first);
         found.dedup_by_key(|candidate| candidate.surface);
         found.truncate(POOL);
         found
@@ -502,7 +502,7 @@ impl Reading {
                 blended.push(Candidate { surface: word.surface, score: floor + sentence + weight * word.score });
             }
         }
-        blended.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.surface.cmp(b.surface)));
+        blended.sort_by(best_first);
         blended
     }
 }

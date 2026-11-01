@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use rayon::prelude::*;
 use ruzstd::decoding::StreamingDecoder;
 use serde::Deserialize;
-use synthswipe::{Affinities, Key, Layout, Lexicon, SENTENCE_START, Sample, spoken_weight, tokens};
+use synthswipe::{Affinities, Key, Layout, Lexicon, SENTENCE_START, Sample, is_key_label, spoken_weight, tokens};
 
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 
@@ -186,7 +186,7 @@ fn heli_gesture(row: HeliRow, language: &'static str, lexicons: &Lexicons) -> Op
         .filter_map(|key| {
             let mut value = key.value.chars();
             let label = value.next()?;
-            (value.next().is_none() && (label.is_alphabetic() || label == '\'')).then_some((label, key))
+            (value.next().is_none() && is_key_label(label)).then_some((label, key))
         })
         .collect();
     let name: String = letters.iter().map(|&(label, _)| label).collect();
@@ -375,7 +375,7 @@ fn futo_gesture(
     let lift = filter.units.offset * key_height;
     let layout = Layout::new(
         keys.iter()
-            .filter(|key| key.letter.is_alphabetic() || key.letter == '\'')
+            .filter(|key| is_key_label(key.letter))
             .map(|key| Key {
                 label: key.letter,
                 x: key.cx * row.canvas_width,

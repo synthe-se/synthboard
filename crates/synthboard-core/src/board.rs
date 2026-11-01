@@ -1,6 +1,6 @@
 //! Keyboards described as data: a new layout is its rows and one name here.
 
-use synthswipe::{Key as DecoderKey, Layout};
+use synthswipe::{Key as DecoderKey, Layout, is_key_label};
 
 /// What pressing a key does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -262,7 +262,7 @@ impl Board {
                     Action::Text(text) => {
                         let mut letters = text.chars();
                         let label = letters.next()?;
-                        (letters.next().is_none() && (label.is_alphabetic() || label == '\'')).then(|| {
+                        (letters.next().is_none() && is_key_label(label)).then(|| {
                             let (x, y) = key.center();
                             DecoderKey { label, x, y }
                         })

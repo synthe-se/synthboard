@@ -254,7 +254,7 @@ pub fn decode_in_context<'lexicon>(
         let others = rank_path(layout, lexicon, &trimmed, &marks, &intent, params, &context);
         ranked.extend(others.into_iter().map(|(score, entry)| (score - params.hook_penalty, entry)));
     }
-    ranked.sort_by(best_first);
+    ranked.sort_by(best_entry);
     // A word can be reached by two paths and must still appear only once.
     let mut seen = HashSet::new();
     ranked.retain(|item| seen.insert(item.1.surface));
@@ -268,8 +268,21 @@ pub fn decode_in_context<'lexicon>(
         .collect())
 }
 
-fn best_first(a: &(f32, Entry<'_>), b: &(f32, Entry<'_>)) -> Ordering {
-    b.0.total_cmp(&a.0).then_with(|| a.1.surface.cmp(b.1.surface))
+/// The order of every ranking: score, then the word, so that a tie stays a tie
+/// the same way each time.
+#[must_use]
+pub fn better(a: (f32, &str), b: (f32, &str)) -> Ordering {
+    b.0.total_cmp(&a.0).then_with(|| a.1.cmp(b.1))
+}
+
+/// Ranks candidates best first.
+#[must_use]
+pub fn best_first(a: &Candidate<'_>, b: &Candidate<'_>) -> Ordering {
+    better((a.score, a.surface), (b.score, b.surface))
+}
+
+fn best_entry(a: &(f32, Entry<'_>), b: &(f32, Entry<'_>)) -> Ordering {
+    better((a.0, a.1.surface), (b.0, b.1.surface))
 }
 
 /// Ranks the lexicon against one reading of the gesture.
@@ -323,12 +336,12 @@ fn rank_path<'lexicon>(
         },
     );
 
-    keep_best(&mut ranked, usize::from(params.refine), best_first);
+    keep_best(&mut ranked, usize::from(params.refine), best_entry);
     for (score, entry) in &mut ranked {
         word_path(entry, &mut keys);
         *score = fine.score(&keys, params.lambda * entry.weight, &mut scratch);
     }
-    keep_best(&mut ranked, usize::from(params.rerank), best_first);
+    keep_best(&mut ranked, usize::from(params.rerank), best_entry);
 
     let mut row = Vec::new();
     for (score, entry) in &mut ranked {

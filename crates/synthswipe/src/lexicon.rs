@@ -53,7 +53,7 @@ pub struct Entry<'lexicon> {
 }
 
 const NO_NODE: u32 = 0;
-const APOSTROPHE: char = '\'';
+pub(crate) const APOSTROPHE: char = '\'';
 /// How much more a capitalised listing must weigh to become the written form.
 const CAPITAL_LEAD: f32 = 16.0;
 
@@ -231,6 +231,12 @@ impl Lexicon {
     #[must_use]
     pub fn contains(&self, word: &str) -> bool {
         self.find(word).is_some()
+    }
+
+    /// How `word` is written here, if it is known: `paris` can be `Paris`.
+    #[must_use]
+    pub fn surface(&self, word: &str) -> Option<&str> {
+        self.find(word).map(|entry| entry.surface)
     }
 
     /// The languages of `word`, or 0 if it is unknown or belongs to none.

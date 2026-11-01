@@ -325,6 +325,12 @@ impl Memory {
         self.rebuild(known);
     }
 
+    /// How many words the user asked to forget.
+    #[must_use]
+    pub fn blocked_count(&self) -> usize {
+        self.blocked.len()
+    }
+
     /// Whether the user asked to forget this word.
     #[must_use]
     pub fn is_blocked(&self, word: &str) -> bool {

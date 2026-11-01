@@ -5,6 +5,7 @@
 use crate::geometry::{Point, distance};
 use crate::layout::Layout;
 use crate::lexicon::Lexicon;
+use crate::shark2::better;
 
 /// How far from a key a tap can still count for it, in key pitches.
 const REACH_KEYS: f32 = 1.6;
@@ -72,11 +73,7 @@ pub fn correct<'lexicon>(
             complete: extra == 0,
         });
     });
-    found.sort_by(|a, b| {
-        b.score
-            .total_cmp(&a.score)
-            .then_with(|| a.surface.cmp(b.surface))
-    });
+    found.sort_by(|a, b| better((a.score, a.surface), (b.score, b.surface)));
     found.truncate(top_k);
     found
 }

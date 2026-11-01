@@ -2,8 +2,15 @@ use std::collections::HashMap;
 use std::fmt;
 
 use crate::geometry::{Point, distance, is_usable};
+use crate::lexicon::APOSTROPHE;
 
 const MIN_PITCH: f32 = 1e-3;
+
+/// Whether a key's label is one a gesture can spell with.
+#[must_use]
+pub fn is_key_label(label: char) -> bool {
+    label.is_alphabetic() || label == APOSTROPHE
+}
 
 /// One key, positioned by its centre.
 #[derive(Debug, Clone, Copy, PartialEq)]

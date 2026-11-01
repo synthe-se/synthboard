@@ -24,13 +24,13 @@ if [ -e "$1" ]; then
     for file in "$@"; do
         ./target/release/trace_keys open "$file" "$opened" "$personal"/trace*.key
     done
-    python3 -I "$root/tools/ingest-traces.py" "$archive" "$opened"
+    ./target/release/traces ingest "$archive" "$opened"
     rm -f "$@" "$opened"
 else
     echo "Nothing new. Send your traces from Synthboard's settings."
 fi
 
-python3 -I "$root/tools/analyze-traces.py" "$archive"
+./target/release/traces report "$archive" --show-words
 
 echo
 echo "Replay through the current decoder:"
