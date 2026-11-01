@@ -4,6 +4,8 @@ description = "Runs the synthswipe model with a minimal ONNX Runtime"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 # Nothing to link a test against on a machine without the runtime: it is tested
 # through `neural-train prod`, which runs the real model file.

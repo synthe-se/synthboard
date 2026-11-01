@@ -4,6 +4,8 @@ description = "Replays recorded gestures through the public synthswipe API"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [features]
 # Links ONNX Runtime for `--neural`.

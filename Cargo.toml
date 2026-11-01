@@ -6,6 +6,8 @@ members = ["crates/synthswipe", "crates/synthswipe-bench", "crates/synthswipe-on
 version = "0.0.0"
 edition = "2024"
 publish = false
+license = "Apache-2.0"
+repository = "https://github.com/synthe-se/synthboard"
 
 [workspace.lints.rust]
 # Deny, not forbid: two reviewed modules of synthboard-ffi may allow it. The other

@@ -46,6 +46,6 @@ A full decode takes 2.3 ms on the Pixel 9a's big core and 14.5 ms on its smalles
 
 ## Status
 
-This is a personal project, and it is still moving fast. Building it takes the datasets listed in [`PROVENANCE.md`](PROVENANCE.md) and a static ONNX Runtime from [`tools/build-ort.sh`](tools/build-ort.sh), so it is not a one-line build yet. The word lists and the model come from data whose licences do not allow publishing them as they are, and that has to be solved before any release. There is no licence for the code yet either.
+This is a personal project, and it is still moving fast. Building it takes the datasets listed in [`PROVENANCE.md`](PROVENANCE.md) and a static ONNX Runtime from [`tools/build-ort.sh`](tools/build-ort.sh), so it is not a one-line build yet. The code is under the [Apache License 2.0](LICENSE). The word lists, the context table and the model are not: they come from data whose licences stop them being published as they are, so they stay out of this repository until they are replaced.
 
 The rules every change follows are in [`AGENTS.md`](AGENTS.md).

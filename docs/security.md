@@ -2,6 +2,10 @@
 
 Synthboard follows the GrapheneOS model: private by default, defence in depth, and no promise the code cannot keep. This page is the reference for what is protected, from whom and how. Anything that changes what is stored, read or signed updates it.
 
+## Reporting a vulnerability
+
+Use GitHub's private vulnerability reporting on this repository: the Security tab, then "Report a vulnerability". Please do not open a public issue for a security problem.
+
 ## Threat model
 
 In order of likelihood:

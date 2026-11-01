@@ -4,6 +4,8 @@ description = "Keyboard behaviour: layouts, touch, text mirror and commands"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 synthswipe = { path = "../synthswipe" }
