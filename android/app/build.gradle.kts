@@ -28,11 +28,17 @@ android {
     }
 
     buildTypes {
+        debug {
+            // A debuggable build must never be able to replace the real keyboard.
+            applicationIdSuffix = ".debug"
+        }
         release {
-            // Personal builds share the debug key, so a release updates a debug
-            // install in place and keeps what the keyboard learned. A published
-            // build needs its own key.
-            signingConfig = signingConfigs.getByName("debug")
+            // Left unsigned here: `tools/sign-release.sh` signs with the key
+            // that only exists on the encrypted volume.
+            signingConfig = null
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
 }
@@ -55,6 +61,8 @@ val boltffiPack = tasks.register<Exec>("boltffiPack") {
         "ANDROID_NDK_HOME",
         androidComponents.sdkComponents.sdkDirectory.get().asFile.resolve("ndk/${android.ndkVersion}").path,
     )
+    // Keeps this machine's paths out of the shipped library.
+    environment("RUSTFLAGS", "--remap-path-prefix=${System.getProperty("user.home")}=~")
     commandLine("boltffi", "pack", "android", "--release")
     outputs.dir(generated)
     outputs.upToDateWhen { false }

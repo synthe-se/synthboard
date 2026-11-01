@@ -1,8 +1,9 @@
 //! Handles the owner's trace keys. Plain traces only ever exist on this Mac.
 //!
 //! `trace_keys new SECRET_FILE PUBLIC_FILE` makes a key pair, and refuses to
-//! replace one. `trace_keys open SECRET_FILE SEALED_FILE OUTPUT` appends every
-//! record it can open to OUTPUT, and reports the ones it cannot.
+//! replace one. `trace_keys open SEALED_FILE OUTPUT SECRET_FILE...` appends every
+//! record one of the keys opens to OUTPUT, and reports the ones none of them
+//! opens: older keys stay usable after a rotation.
 
 use std::error::Error;
 use std::fs::{self, OpenOptions};
@@ -25,15 +26,17 @@ fn create(secret_path: &str, public_path: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn open_all(secret_path: &str, sealed_path: &str, output: &str) -> Result<(), Box<dyn Error>> {
-    let hex = fs::read_to_string(secret_path)?;
-    let secret: [u8; 32] = from_hex(hex.trim())
-        .and_then(|bytes| bytes.try_into().ok())
-        .ok_or("invalid secret key")?;
+fn read_secret(path: &&str) -> Result<[u8; 32], Box<dyn Error>> {
+    let hex = fs::read_to_string(path)?;
+    Ok(from_hex(hex.trim()).and_then(|bytes| bytes.try_into().ok()).ok_or("invalid secret key")?)
+}
+
+fn open_all(sealed_path: &str, output: &str, secret_paths: &[&str]) -> Result<(), Box<dyn Error>> {
+    let secrets = secret_paths.iter().map(read_secret).collect::<Result<Vec<_>, _>>()?;
     let mut out = OpenOptions::new().append(true).create(true).mode(OWNER_ONLY).open(output)?;
     let (mut opened, mut failed) = (0, 0);
     for line in fs::read_to_string(sealed_path)?.lines() {
-        match from_hex(line).and_then(|record| open(&secret, &record).ok()) {
+        match from_hex(line).and_then(|record| secrets.iter().find_map(|secret| open(secret, &record).ok())) {
             Some(plain) => {
                 out.write_all(&plain)?;
                 out.write_all(b"\n")?;
@@ -51,7 +54,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let names: Vec<&str> = arguments.iter().map(String::as_str).collect();
     match names.as_slice() {
         ["new", secret, public] => create(secret, public),
-        ["open", secret, sealed, output] => open_all(secret, sealed, output),
-        _ => Err("usage: trace_keys new SECRET PUBLIC | open SECRET SEALED OUTPUT".into()),
+        ["open", sealed, output, secrets @ ..] if !secrets.is_empty() => open_all(sealed, output, secrets),
+        _ => Err("usage: trace_keys new SECRET PUBLIC | open SEALED OUTPUT SECRET...".into()),
     }
 }

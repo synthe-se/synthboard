@@ -5,6 +5,7 @@ cable. A block is a gesture line with the correction lines after it, and a
 gesture seen before is dropped, unless the new copy knows what happened next.
 Usage: `python3 -I tools/ingest-traces.py ARCHIVE RECEIVED...`.
 """
+import os
 import pathlib
 import sys
 
@@ -29,6 +30,7 @@ def blocks(text):
 
 
 def main():
+    os.umask(0o077)
     archive = pathlib.Path(sys.argv[1])
     archive.parent.mkdir(parents=True, exist_ok=True)
     known = archive.read_text("utf-8") if archive.exists() else ""

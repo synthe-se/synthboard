@@ -31,6 +31,7 @@ class InlineStrip(context: Context) : HorizontalScrollView(context) {
 
     init {
         visibility = GONE
+        filterTouchesWhenObscured = true
         isHorizontalScrollBarEnabled = false
         isFillViewport = true
         setBackgroundColor(Palette(context).background)

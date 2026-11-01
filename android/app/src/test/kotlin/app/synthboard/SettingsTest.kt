@@ -29,7 +29,7 @@ import javax.crypto.KeyGenerator
 @Config(sdk = [35])
 class SettingsTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
-    private val uri = Uri.parse("content://${TraceProvider.AUTHORITY}/${TraceProvider.FILE}")
+    private val uri = Uri.parse("content://${context.packageName}${TraceProvider.AUTHORITY_SUFFIX}/${TraceProvider.FILE}")
 
     private fun buttons(view: View): List<Button> = when (view) {
         is Button -> listOf(view)
@@ -37,7 +37,7 @@ class SettingsTest {
         else -> emptyList()
     }
 
-    private fun provider(): TraceProvider = Robolectric.setupContentProvider(TraceProvider::class.java, TraceProvider.AUTHORITY)
+    private fun provider(): TraceProvider = Robolectric.setupContentProvider(TraceProvider::class.java, context.packageName + TraceProvider.AUTHORITY_SUFFIX)
 
     private fun press(activity: SettingsActivity, label: Int) {
         val text = context.getString(label)
@@ -109,6 +109,35 @@ class SettingsTest {
         try {
             val other = generator.generateKey()
             Vault { other }.open(sealed)
+        } catch (_: GeneralSecurityException) {
+            refused = true
+        }
+        assertTrue(refused)
+    }
+
+    @Test
+    fun a_trace_file_at_its_limit_says_so_and_can_be_deleted() {
+        val traces = File(context.filesDir, TraceProvider.FILE)
+        java.io.RandomAccessFile(traces, "rw").use { it.setLength(TraceProvider.MAX_BYTES) }
+        val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
+        if (!Settings.hasTraceKey(context)) return
+        press(activity, R.string.delete_traces)
+        assertFalse(traces.exists())
+    }
+
+    @Test
+    fun the_memory_format_is_part_of_what_is_sealed() {
+        val key = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
+        val sealed = Vault { key }.seal("mot")
+        val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(
+            javax.crypto.Cipher.DECRYPT_MODE,
+            key,
+            javax.crypto.spec.GCMParameterSpec(128, sealed.copyOfRange(0, 12)),
+        )
+        var refused = false
+        try {
+            cipher.doFinal(sealed, 12, sealed.size - 12)
         } catch (_: GeneralSecurityException) {
             refused = true
         }

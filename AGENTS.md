@@ -30,14 +30,15 @@ The model is GrapheneOS: private by default and defence in depth.
 - The keyboard never reads the clipboard. Selection, copy and paste belong to the system's own menu.
 - Password managers appear through Android's inline suggestions: surfaces the keyboard hosts and cannot read.
 - Text leaves the engine only as commits to the field. Traces are sealed with the public key before they leave the engine, and plain text never reaches the Android side.
-- Memory is encrypted at rest. Session text is zeroised when the keyboard closes.
-- Personal data stays in the ignored `data/raw/personal/`. Secret keys and plain traces never enter Git, logs or a chat. Never print or pass a recovery phrase.
-- The release stays non-debuggable, without backups, and passes `tools/check-release.sh`.
+- Memory is encrypted at rest with a key that needs an unlocked phone, and leaves RAM whenever the keyboard hides. Session text is zeroised when the keyboard closes.
+- Personal data and signing keys live on the encrypted volume only (`tools/vault.sh`), reached through the ignored `data/raw/personal`. Secret keys and plain traces never enter Git, logs or a chat. Never print or pass a recovery phrase.
+- `docs/security.md` is the threat model. A change to what is stored, read or signed updates it.
+- The release stays non-debuggable, without backups, signed by `tools/sign-release.sh`, and passes `tools/check-release.sh`.
 
 ## Repository
 
 - Code, comments, identifiers and commits are in English. User-facing strings live in `values/` and `values-fr/`.
-- `PROVENANCE.md` and `AGENTS.md` are the only tracked Markdown. Research notes, reports and baselines stay ignored and must stay on disk.
+- `PROVENANCE.md`, `AGENTS.md` and `docs/security.md` are the only tracked Markdown. Research notes, reports and baselines stay ignored and must stay on disk.
 - Comments state why, not what. Keep them short and do not narrate changes.
 - Commit or push only when the owner asks. Never bypass a denied permission.
 
@@ -50,7 +51,7 @@ cd crates/synthboard-ffi && boltffi generate kotlin   # after changing any #[dat
 ./tools/test-shell.sh                                 # `record` only for an intended visual change
 cd fuzz && RUSTFLAGS="-Clink-arg=-Wl,-undefined,dynamic_lookup" cargo +nightly fuzz run fuzz_engine --sanitizer none -- -max_total_time=120
 cargo mutants --in-diff <diff>                        # surviving mutants need a test or a reason
-./tools/check-release.sh                              # after `assembleRelease`
+./tools/sign-release.sh && ./tools/check-release.sh   # after `assembleRelease`, with the volume open
 ```
 
 Every new behaviour gets a test, and new input paths get fuzzed. State plainly what was verified on the device and what was not.

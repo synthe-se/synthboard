@@ -1,9 +1,5 @@
 package app.synthboard
 
-import android.content.BroadcastReceiver
-import android.content.Context
-import android.content.Intent
-import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.graphics.Paint
 import android.inputmethodservice.InputMethodService
@@ -11,7 +7,6 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.os.UserManager
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.View
@@ -50,39 +45,23 @@ class SynthboardService : InputMethodService() {
     private var haptics = true
     private var seenErasures = 0
 
-    /** Fires once after a reboot, when the user's own files become readable. */
-    private val unlocked = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            guarded {
-                restoreUserData()
-                unregisterUnlockWatch()
-            }
-        }
-    }
-    private var watchingUnlock = false
+    private var readable = false
 
-    private fun isUnlocked(): Boolean = getSystemService(UserManager::class.java).isUserUnlocked
+    /** Memory that could not be written yet, because the phone locked first. Only the I/O thread uses it. */
+    private var unsaved: String? = null
 
-    private fun unregisterUnlockWatch() {
-        if (watchingUnlock) {
-            watchingUnlock = false
-            unregisterReceiver(unlocked)
-        }
-    }
+    private fun preferences(): SharedPreferences = getSharedPreferences(Settings.FILE, MODE_PRIVATE)
 
-    private fun preferences(): SharedPreferences? =
-        if (isUnlocked()) getSharedPreferences(Settings.FILE, MODE_PRIVATE) else null
-
-    private fun memoryFile(): File? = if (isUnlocked()) File(filesDir, Settings.MEMORY_FILE) else null
+    private fun memoryFile() = File(filesDir, Settings.MEMORY_FILE)
 
     /** The sealed trace. It only exists in a build holding an owner's key. */
     private fun traceFile(): File? = preferences()
-        ?.takeIf { Settings.hasTraceKey(this) && it.getBoolean(Settings.TRACES, true) }
+        .takeIf { Settings.hasTraceKey(this) && it.getBoolean(Settings.TRACES, true) }
         ?.let { File(filesDir, TraceProvider.FILE) }
 
     private fun readAsset(name: String): ByteArray = assets.open(name).use { it.readBytes() }
 
-    /** Loads what the core needs, once per process, and works before an unlock. */
+    /** Loads what the core needs, once per process. */
     private fun loadLanguageData() {
         if (Core.loading.getAndSet(true)) return
         Core.onIo {
@@ -93,18 +72,24 @@ class SynthboardService : InputMethodService() {
         }
     }
 
-    /** Reads the user's memory and settings. After a reboot this waits for the unlock. */
+    /** Reads the user's settings, once per process. */
     private fun restoreUserData() {
-        val saved = preferences() ?: return
+        val saved = preferences()
         tone = saved.getInt(Settings.TONE, 0)
         seenErasures = saved.getInt(Settings.ERASURES, 0)
         val recents = saved.getString(Settings.RECENTS, "").orEmpty().split(' ').filter(String::isNotEmpty)
         send(Event.Recents(recents))
+    }
+
+    /**
+     * Brings memory back for this opening: it leaves RAM whenever the keyboard
+     * hides. A locked phone refuses the key, and the keyboard then works without.
+     */
+    private fun loadMemory() {
         Core.onIo {
-            val text = readMemory()
-            handler.post { text?.let { send(Event.Memory(it)) } }
+            flushMemory()
+            keyboard.loadMemory(readMemory())
         }
-        Core.onIo { sealLegacyTraces() }
     }
 
     /** Loads the emoji the first time the panel opens: most sessions never do. */
@@ -148,7 +133,7 @@ class SynthboardService : InputMethodService() {
 
     /** Reads what the settings screen stored. Nothing here polls: it runs when the keyboard opens. */
     private fun applySettings() {
-        val saved = preferences() ?: return
+        val saved = preferences()
         haptics = saved.getBoolean(Settings.HAPTICS, true)
         view?.showTrail = saved.getBoolean(Settings.TRAIL, true)
         send(Event.HeightScale(saved.getInt(Settings.HEIGHT, 100) / 100f))
@@ -159,25 +144,9 @@ class SynthboardService : InputMethodService() {
         }
     }
 
-    /** Reads the sealed memory, and seals one left in the clear by an older version. */
-    private fun readMemory(): String? {
-        val sealed = memoryFile() ?: return null
-        val plain = File(filesDir, Settings.LEGACY_MEMORY_FILE)
-        if (!plain.exists()) return sealed.takeIf(File::exists)?.let { vault.open(it.readBytes()) }
-        val text = plain.readText()
-        writeMemory(sealed, text)
-        plain.delete()
-        return text
-    }
-
-    /** Seals traces left in the clear by an older version, then removes them. */
-    private fun sealLegacyTraces() {
-        val plain = File(filesDir, Settings.LEGACY_TRACE_FILE)
-        val target = traceFile()
-        if (!plain.exists() || target == null) return
-        val records = plain.readLines().map { keyboard.sealLine(it) ?: return }
-        target.appendText(records.joinToString("") { it + "\n" })
-        plain.delete()
+    private fun readMemory(): String {
+        val sealed = memoryFile()
+        return if (sealed.exists()) vault.open(sealed.readBytes()) else ""
     }
 
     private fun writeMemory(target: File, text: String) {
@@ -186,34 +155,33 @@ class SynthboardService : InputMethodService() {
         temporary.renameTo(target)
     }
 
+    private fun flushMemory() {
+        unsaved?.let { writeMemory(memoryFile(), it) }
+        unsaved = null
+    }
+
     private fun saveMemory(text: String) {
-        val target = memoryFile() ?: return
-        Core.onIo { writeMemory(target, text) }
+        Core.onIo {
+            unsaved = text
+            flushMemory()
+        }
     }
 
     private fun appendTrace(record: String) {
         val target = traceFile() ?: return
         Core.onIo {
-            if (target.length() < MAX_TRACE_BYTES) target.appendText(record + "\n")
+            if (target.length() < TraceProvider.MAX_BYTES) target.appendText(record + "\n")
         }
     }
 
     override fun onCreate() {
         super.onCreate()
         guarded { loadLanguageData() }
-        guarded {
-            if (isUnlocked()) {
-                restoreUserData()
-            } else {
-                watchingUnlock = true
-                registerReceiver(unlocked, IntentFilter(Intent.ACTION_USER_UNLOCKED), RECEIVER_NOT_EXPORTED)
-            }
-        }
+        guarded { restoreUserData() }
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        guarded { unregisterUnlockWatch() }
         view = null
         super.onDestroy()
     }
@@ -242,7 +210,7 @@ class SynthboardService : InputMethodService() {
         it.setEmoji(emoji)
         it.onToneChosen = { chosen ->
             tone = chosen
-            preferences()?.edit()?.putInt(Settings.TONE, chosen)?.apply()
+            preferences().edit().putInt(Settings.TONE, chosen).apply()
         }
     }
 
@@ -253,16 +221,17 @@ class SynthboardService : InputMethodService() {
         guarded {
             applySettings()
             val field = Field(info.inputType.toUInt(), info.imeOptions.toUInt())
-            val readable = keyboard.mayRead(field)
-            protectScreen(!readable)
+            readable = keyboard.mayRead(field)
+            protectScreen(!readable || !preferences().getBoolean(Settings.SCREENSHOTS, false))
             val before = if (readable) textBeforeCursor() else ""
             val after = if (readable) textAfterCursor() else ""
             send(Event.Shown(field, before, after, info.initialSelEnd.coerceAtLeast(0).toUInt()))
             send(Event.Session((System.currentTimeMillis() / 1000).toULong()))
+            loadMemory()
         }
     }
 
-    /** Keeps the keys of a password field out of screenshots and recordings. */
+    /** Keeps the keyboard, whose bar shows what is typed, out of screenshots and recordings. */
     private fun protectScreen(on: Boolean) {
         val flag = WindowManager.LayoutParams.FLAG_SECURE
         window?.window?.run { if (on) addFlags(flag) else clearFlags(flag) }
@@ -280,10 +249,10 @@ class SynthboardService : InputMethodService() {
     }
 
     private fun textBeforeCursor(): String =
-        currentInputConnection?.getTextBeforeCursor(CONTEXT_CHARS, 0)?.toString() ?: ""
+        currentInputConnection?.getTextBeforeCursor(CONTEXT_CHARS, 0)?.takeLast(CONTEXT_CHARS)?.toString() ?: ""
 
     private fun textAfterCursor(): String =
-        currentInputConnection?.getTextAfterCursor(CONTEXT_CHARS, 0)?.toString() ?: ""
+        currentInputConnection?.getTextAfterCursor(CONTEXT_CHARS, 0)?.take(CONTEXT_CHARS)?.toString() ?: ""
 
     private fun send(event: Event) {
         guarded {
@@ -301,7 +270,7 @@ class SynthboardService : InputMethodService() {
                 }
             }
             connection?.endBatchEdit()
-            if (wantsContext) send(Event.Context(textBeforeCursor(), textAfterCursor()))
+            if (wantsContext && readable) send(Event.Context(textBeforeCursor(), textAfterCursor()))
         }
     }
 
@@ -335,8 +304,8 @@ class SynthboardService : InputMethodService() {
             is Command.SaveMemory -> saveMemory(command.text)
             is Command.Trace -> appendTrace(command.record)
             is Command.SaveRecents ->
-                preferences()?.edit()?.putString(Settings.RECENTS, command.items.joinToString(" "))?.apply()
-            is Command.Announce -> view?.announceForAccessibility(spoken(command))
+                preferences().edit().putString(Settings.RECENTS, command.items.joinToString(" ")).apply()
+            is Command.Announce -> view?.contentDescription = spoken(command)
         }
     }
 
@@ -373,6 +342,5 @@ class SynthboardService : InputMethodService() {
 
     private companion object {
         const val CONTEXT_CHARS = 2000
-        const val MAX_TRACE_BYTES = 64L * 1024 * 1024
     }
 }

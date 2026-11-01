@@ -1,13 +1,16 @@
 #!/bin/sh
 # The daily loop: opens the sealed traces sent from Synthboard's settings over
 # Taildrop, reports how typing went, and replays every gesture through the
-# current decoder. Plain traces exist only here, in the ignored data folder.
+# current decoder. Plain traces exist only on the encrypted volume, which is
+# open for the length of this script.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 personal="$root/data/raw/personal"
 archive="$personal/traces.tsv"
 inbox="$personal/inbox"
+"$root/tools/vault.sh" open
+trap '"$root/tools/vault.sh" close' EXIT
 mkdir -p "$inbox"
 cd "$root"
 cargo build -q --release -p synthswipe-bench
@@ -16,13 +19,12 @@ tailscale file get --conflict=rename "$inbox" > /dev/null 2>&1 || true
 
 set -- "$inbox"/*.sealed*
 if [ -e "$1" ]; then
-    opened=$(mktemp)
-    trap 'rm -f "$opened"' EXIT
+    opened="$personal/opened.tmp"
     for file in "$@"; do
-        ./target/release/trace_keys open "$personal/trace.key" "$file" "$opened"
+        ./target/release/trace_keys open "$file" "$opened" "$personal"/trace*.key
     done
     python3 -I "$root/tools/ingest-traces.py" "$archive" "$opened"
-    rm -f "$@"
+    rm -f "$@" "$opened"
 else
     echo "Nothing new. Send your traces from Synthboard's settings."
 fi

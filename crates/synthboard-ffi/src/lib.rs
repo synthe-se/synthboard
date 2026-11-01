@@ -73,9 +73,13 @@ impl Keyboard {
         }
     }
 
-    /// Seals a line left in the clear by an older version, or nothing without a key.
-    pub fn seal_line(&self, line: String) -> Option<String> {
-        self.lock().sealed(&line)
+    /// Reads saved memory away from the engine's lock, then gives it to the engine.
+    pub fn load_memory(&self, text: String) {
+        let read = self.lock().memory_reader();
+        let (memory, panicked) = guarded(|| Some(read(&text)));
+        if let (Some(memory), false) = (memory, panicked) {
+            self.lock().adopt_memory(memory);
+        }
     }
 
     /// The word the gesture under way would give, or nothing. The engine is

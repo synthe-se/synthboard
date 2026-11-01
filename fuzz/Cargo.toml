@@ -8,10 +8,18 @@ publish = false
 cargo-fuzz = true
 
 [dependencies]
+boltffi = "=0.32.1"
 libfuzzer-sys = "0.4"
 synthboard-core = { path = "../crates/synthboard-core" }
-synthboard-seal = { path = "../crates/synthboard-seal" }
+synthboard-seal = { path = "../crates/synthboard-seal", features = ["legacy"] }
 synthswipe = { path = "../crates/synthswipe" }
+
+[[bin]]
+name = "fuzz_wire"
+path = "fuzz_targets/fuzz_wire.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "fuzz_seal"

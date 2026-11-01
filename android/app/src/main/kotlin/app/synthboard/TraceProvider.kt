@@ -41,6 +41,9 @@ class TraceProvider : ContentProvider() {
     companion object {
         const val FILE = "traces.sealed"
         const val TYPE = "application/octet-stream"
-        const val AUTHORITY = "app.synthboard.traces"
+        const val AUTHORITY_SUFFIX = ".traces"
+
+        /** Recording stops here, and the settings screen says so. */
+        const val MAX_BYTES = 64L * 1024 * 1024
     }
 }

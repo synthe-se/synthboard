@@ -69,6 +69,10 @@ const TRACE_LEADS: f32 = 0.35;
 /// Matching traces that make a word lead however loose they are: the user has
 /// chosen it twice for this gesture, and that decides.
 const TRACE_VOTES: u32 = 2;
+/// What a screen reader says for a key of a field that must stay secret.
+const SECRET_KEY: &str = "•";
+/// The mirrors' room, so that writing into them does not leave old copies behind.
+const MIRROR_BYTES: usize = 8192;
 /// How close a new gesture must be to a deleted one to be a second try, in key pitches.
 const RETRY_REACH: f32 = 0.6;
 const FRENCH: u8 = 1;
@@ -211,8 +215,6 @@ pub enum Event {
     DeleteOne,
     /// Provides the recent emoji saved earlier.
     Recents { items: Vec<String> },
-    /// Provides what was learned earlier.
-    Memory { text: String },
     /// The language data finished loading, so the bar can fill.
     LanguageReady,
     /// A keyboard session began, at this Unix time in seconds.
@@ -258,6 +260,15 @@ struct Typing {
     taps: Vec<[f32; 2]>,
     /// What the bar offers, in slot order: centre, left, right.
     offered: Vec<String>,
+}
+
+/// How much of the saved memory is in RAM, which it leaves whenever the keyboard
+/// hides. Only a full copy is ever saved, or the file would lose the rest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    Nothing,
+    Waiting,
+    Everything,
 }
 
 /// The words deleted after a gesture, and that gesture.
@@ -332,6 +343,7 @@ pub struct Engine {
     /// The last word and the word before it, learned once the next one starts.
     pending: Option<Pending>,
     retry: Option<Retry>,
+    held: Held,
     undo: Option<String>,
     memory_changed: bool,
     typing: Option<Typing>,
@@ -440,6 +452,20 @@ fn cased(shift: Shift, word: &str) -> String {
         Shift::Locked => word.to_uppercase(),
         Shift::Auto | Shift::OneShot => title_case(word),
         Shift::Off => word.to_owned(),
+    }
+}
+
+/// Writes `text` over `target`, leaving no copy of either behind.
+fn replace_wiped(target: &mut String, mut text: String) {
+    target.zeroize();
+    target.push_str(&text);
+    text.zeroize();
+}
+
+impl Drop for Engine {
+    /// A panic replaces the engine, which must not free what the user typed as is.
+    fn drop(&mut self) {
+        self.forget_text();
     }
 }
 
@@ -555,6 +581,7 @@ impl Engine {
             leaning: LANGUAGE_START,
             pending: None,
             retry: None,
+            held: Held::Nothing,
             undo: None,
             memory_changed: false,
             typing: None,
@@ -575,8 +602,8 @@ impl Engine {
             field: Field::default(),
             shift: Shift::default(),
             spacing: Spacing::default(),
-            before: String::new(),
-            after: String::new(),
+            before: String::with_capacity(MIRROR_BYTES),
+            after: String::with_capacity(MIRROR_BYTES),
             hovered: None,
             cursor: 0,
             expected_selection: None,
@@ -640,13 +667,14 @@ impl Engine {
             }
             Event::ForgetAll => {
                 self.memory = Arc::new(Memory::default());
+                self.held = Held::Everything;
                 self.pending = None;
                 self.recents.clear();
                 self.protected.clear();
                 self.clear_suggestions();
             }
             Event::Shown { field, before, after, cursor } => {
-                self.after = if field.allows_reading() { after } else { String::new() };
+                replace_wiped(&mut self.after, if field.allows_reading() { after } else { String::new() });
                 self.shown(field, before, cursor);
             }
             Event::Hidden => self.hidden(),
@@ -666,8 +694,8 @@ impl Engine {
             Event::Selection { start, end } => self.selection_changed(start, end),
             Event::Context { before, after } => {
                 if self.field.allows_reading() {
-                    self.before = before;
-                    self.after = after;
+                    replace_wiped(&mut self.before, before);
+                    replace_wiped(&mut self.after, after);
                 }
                 self.refresh_shift();
             }
@@ -679,9 +707,6 @@ impl Engine {
                 if self.typing.is_none() && self.last_word.is_none() {
                     self.clear_suggestions();
                 }
-            }
-            Event::Memory { text } => {
-                self.memory = Arc::new(Memory::parse(&text, self.known()));
             }
             Event::OpenEmojiSearch => self.open_search(),
             Event::CloseEmojiPanel => self.search = None,
@@ -746,7 +771,10 @@ impl Engine {
     fn shown(&mut self, field: Field, before: String, cursor: u32) {
         self.field = field;
         self.leaning = LANGUAGE_START;
-        self.before = if field.allows_reading() { before } else { String::new() };
+        replace_wiped(&mut self.before, if field.allows_reading() { before } else { String::new() });
+        if self.held == Held::Nothing {
+            self.held = Held::Waiting;
+        }
         self.cursor = cursor;
         self.selection = (cursor, cursor);
         self.expected_selection = None;
@@ -765,11 +793,40 @@ impl Engine {
         self.finish_typing_literal();
         self.confirm_pending();
         self.save_memory();
+        self.release_memory();
         self.forget_text();
         if self.search.take().is_some() {
             self.out.push(Command::EmojiSearch { on: false, query: String::new(), results: Vec::new() });
         }
         self.out.push(Command::EmojiPanel { on: false, recents: Vec::new() });
+    }
+
+    /// Lets go of what was learned: it stays in RAM only while the keyboard shows.
+    fn release_memory(&mut self) {
+        self.held = Held::Nothing;
+        self.memory = Arc::new(Memory::default());
+    }
+
+    /// Reads saved memory for this engine, with the lexicon as it is now. It
+    /// needs no lock on the engine, so a long memory never delays a tap.
+    pub fn memory_reader(&self) -> impl Fn(&str) -> Memory + use<> {
+        let known = self.known();
+        move |text| Memory::parse(text, &known)
+    }
+
+    /// Takes memory read for this opening. Until it arrives nothing is saved,
+    /// or an empty memory would replace the real one.
+    pub fn adopt_memory(&mut self, memory: Memory) {
+        if self.held != Held::Nothing {
+            self.memory = Arc::new(memory);
+            self.held = Held::Everything;
+        }
+    }
+
+    /// Reads and takes saved memory.
+    pub fn load_memory(&mut self, text: &str) {
+        let memory = self.memory_reader()(text);
+        self.adopt_memory(memory);
     }
 
     /// Forgets the word in progress and any space owed after it.
@@ -790,15 +847,29 @@ impl Engine {
         }
         self.search = None;
         self.predictions.clear();
-        self.corrected = None;
-        self.failed_gesture = None;
-        if let Some(retry) = self.retry.as_mut() {
+        self.predictions.zeroize();
+        if let Some(mut corrected) = self.corrected.take() {
+            corrected.typed.zeroize();
+            corrected.written.zeroize();
+        }
+        if let Some(mut gesture) = self.failed_gesture.take() {
+            gesture.fill(Sample { x: 0.0, y: 0.0, t_ms: 0 });
+        }
+        if let Some(mut retry) = self.retry.take() {
             retry.words.zeroize();
         }
-        self.retry = None;
         self.drop_undo();
-        self.typing = None;
-        self.last_word = None;
+        if let Some(mut typing) = self.typing.take() {
+            typing.text.zeroize();
+        }
+        if let Some(mut word) = self.last_word.take() {
+            word.text.zeroize();
+            word.alternatives.zeroize();
+        }
+        if let Some(mut pending) = self.pending.take() {
+            pending.written.zeroize();
+            pending.history.zeroize();
+        }
     }
 
     fn cancel(&mut self) {
@@ -934,7 +1005,7 @@ impl Engine {
     }
 
     fn save_memory(&mut self) {
-        if std::mem::take(&mut self.memory_changed) {
+        if std::mem::take(&mut self.memory_changed) && self.held == Held::Everything {
             self.out.push(Command::SaveMemory { text: self.memory.to_text() });
         }
     }
@@ -1803,7 +1874,8 @@ impl Engine {
         if key != self.hovered {
             self.hovered = key;
             if let Some(found) = key.and_then(|index| self.key(index)) {
-                let command = Command::Announce { text: found.label.clone(), icon: icon_of(&found.action) };
+                let text = if self.field.allows_reading() { found.label.clone() } else { SECRET_KEY.to_owned() };
+                let command = Command::Announce { text, icon: icon_of(&found.action) };
                 self.out.push(command);
             }
         }
@@ -2093,6 +2165,7 @@ mod tests {
             let mut rig = Self { engine, text: String::new(), t: 10_000 };
             let step = rig.engine.step(Event::Shown { field, before: String::new(), after: String::new(), cursor: 0 });
             rig.apply(step);
+            rig.engine.load_memory("");
             rig
         }
 
@@ -3190,6 +3263,66 @@ mod tests {
         rig.engine.undo = Some("deux".to_owned());
         rig.send(Event::Hidden);
         assert_eq!(rig.engine.undo, None);
+    }
+
+    #[test]
+    fn closing_lets_go_of_memory_and_opening_takes_it_back() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        let step = rig.send(Event::Hidden);
+        let Some(Command::SaveMemory { text }) =
+            step.commands.iter().find(|c| matches!(c, Command::SaveMemory { .. })).cloned()
+        else {
+            unreachable!("the word was kept");
+        };
+        assert_eq!(rig.engine.memory.to_text(), "");
+        rig.send(Event::Shown { field: rig.engine.field, before: String::new(), after: String::new(), cursor: 0 });
+        rig.engine.load_memory(&text);
+        assert!(rig.engine.memory.familiarity("bonjour") > 0.0);
+    }
+
+    #[test]
+    fn nothing_is_saved_before_memory_arrives() {
+        let mut rig = plain_rig();
+        rig.send(Event::Hidden);
+        rig.send(Event::Shown { field: rig.engine.field, before: String::new(), after: String::new(), cursor: 0 });
+        rig.swipe("bonjour");
+        let step = rig.send(Event::Hidden);
+        assert!(!step.commands.iter().any(|c| matches!(c, Command::SaveMemory { .. })));
+    }
+
+    #[test]
+    fn memory_read_too_late_stays_out_of_ram() {
+        let mut rig = plain_rig();
+        rig.send(Event::Hidden);
+        rig.engine.load_memory("bonjour\t3\n");
+        assert_eq!(rig.engine.memory.to_text(), "");
+    }
+
+    #[test]
+    fn closing_wipes_every_word_held() {
+        let mut rig = rig_with_text("une deux");
+        rig.engine.predictions = vec!["trois".to_owned()];
+        rig.engine.corrected = Some(Corrected { typed: "a".to_owned(), written: "b".to_owned() });
+        rig.send(Event::Hidden);
+        assert_eq!(rig.engine.predictions, Vec::<String>::new());
+        assert!(rig.engine.corrected.is_none());
+        assert_eq!(rig.engine.before, "");
+    }
+
+    #[test]
+    fn a_new_mirror_replaces_the_old_one_whole() {
+        let mut target = "ancien texte".to_owned();
+        replace_wiped(&mut target, "neuf".to_owned());
+        assert_eq!(target, "neuf");
+    }
+
+    #[test]
+    fn a_screen_reader_never_names_a_secret_key() {
+        let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT | android::PASSWORD, ime_options: 0 });
+        let (x, y) = rig.center("a");
+        let step = rig.send(Event::Hover { x, y });
+        assert!(step.commands.contains(&Command::Announce { text: SECRET_KEY.to_owned(), icon: Icon::None }));
     }
 
     #[test]

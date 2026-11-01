@@ -24,6 +24,12 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     private val density = resources.displayMetrics.density
     private var palette = Palette(context)
 
+    init {
+        filterTouchesWhenObscured = true
+        setAccessibilityDataSensitive(ACCESSIBILITY_DATA_SENSITIVE_YES)
+        accessibilityLiveRegion = ACCESSIBILITY_LIVE_REGION_POLITE
+    }
+
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
     private val trailPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {

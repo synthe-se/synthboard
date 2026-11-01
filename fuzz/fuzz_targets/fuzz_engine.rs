@@ -69,7 +69,7 @@ fn event(chunk: &[u8]) -> Event {
         17 => Event::CloseEmojiPanel,
         18 => Event::Hover { x, y },
         19 => Event::Session { unix: t },
-        _ => Event::Memory { text: text(chunk[9]) },
+        _ => Event::Recents { items: vec![text(chunk[9])] },
     }
 }
 

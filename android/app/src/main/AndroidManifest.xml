@@ -4,7 +4,6 @@
     <application
         android:allowBackup="false"
         android:dataExtractionRules="@xml/no_extraction"
-        android:directBootAware="true"
         android:icon="@mipmap/ic_launcher"
         android:label="Synthboard"
         android:memtagMode="sync"
@@ -25,13 +24,12 @@
 
         <provider
             android:name=".TraceProvider"
-            android:authorities="app.synthboard.traces"
+            android:authorities="${applicationId}.traces"
             android:exported="false"
             android:grantUriPermissions="true" />
 
         <service
             android:name=".SynthboardService"
-            android:directBootAware="true"
             android:exported="true"
             android:label="Synthboard"
             android:permission="android.permission.BIND_INPUT_METHOD">

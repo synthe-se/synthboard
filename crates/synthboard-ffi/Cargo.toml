@@ -9,7 +9,7 @@ publish.workspace = true
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [dependencies]
-boltffi = "0.32.1"
+boltffi = "=0.32.1"
 synthboard-core = { path = "../synthboard-core" }
 synthboard-seal = { path = "../synthboard-seal" }
 synthswipe = { path = "../synthswipe" }

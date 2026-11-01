@@ -7,6 +7,7 @@ use std::fmt::Write as _;
 use std::sync::Arc;
 
 use synthswipe::{Lexicon, SENTENCE_START, signature_distance, tokens};
+use zeroize::Zeroize;
 
 /// Uses before a word missing from the lexicon becomes swipeable (B-10.6).
 const VALIDATIONS: u32 = 2;
@@ -52,6 +53,19 @@ pub struct Memory {
     /// The user's own gestures for words the decoder got wrong.
     traces: Vec<(String, Vec<[f32; 2]>)>,
     extra: Option<Arc<Lexicon>>,
+}
+
+impl Drop for Memory {
+    /// Without zeroing on free, what was learned would stay in the heap.
+    fn drop(&mut self) {
+        let learned = self.words.drain().map(|(word, _)| word);
+        let pairs = self.pairs.drain().flat_map(|(context, next)| {
+            std::iter::once(context).chain(next.into_keys())
+        });
+        let forms = self.forms.drain().flat_map(|(lower, form)| [lower, form]);
+        let traces = self.traces.drain(..).map(|(word, _)| word);
+        learned.chain(pairs).chain(forms).chain(traces).for_each(|mut word| word.zeroize());
+    }
 }
 
 impl Memory {

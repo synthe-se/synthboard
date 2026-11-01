@@ -29,9 +29,8 @@ object Settings {
     const val TONE = "tone"
     const val RECENTS = "recents"
     const val FILE = "emoji"
-    const val MEMORY_FILE = "memory.sealed"
-    const val LEGACY_MEMORY_FILE = "memory.tsv"
-    const val LEGACY_TRACE_FILE = "traces.tsv"
+    const val SCREENSHOTS = "screenshots"
+    const val MEMORY_FILE = "memory.vault"
     private const val TRACE_KEY_ASSET = "trace.pub"
 
     /** The owner's public key, which only a personal build carries. */
@@ -45,7 +44,7 @@ object Settings {
 
     /** Every file holding something the keyboard learned or recorded. */
     fun personalFiles(context: Context): List<File> =
-        listOf(MEMORY_FILE, LEGACY_MEMORY_FILE, TraceProvider.FILE, LEGACY_TRACE_FILE)
+        listOf(MEMORY_FILE, "$MEMORY_FILE.tmp", TraceProvider.FILE)
             .map { File(context.filesDir, it) }
 }
 
@@ -65,7 +64,11 @@ class SettingsActivity : Activity() {
             val gutter = (20 * resources.displayMetrics.density).toInt()
             setPadding(gutter, gutter, gutter, gutter)
         }
-        setContentView(ScrollView(this).apply { addView(list) })
+        setContentView(ScrollView(this).apply {
+            filterTouchesWhenObscured = true
+            setAccessibilityDataSensitive(View.ACCESSIBILITY_DATA_SENSITIVE_YES)
+            addView(list)
+        })
     }
 
     override fun onResume() {
@@ -138,7 +141,16 @@ class SettingsActivity : Activity() {
         if (Settings.hasTraceKey(this)) {
             heading(R.string.development)
             toggle(R.string.record_traces, Settings.TRACES)
+            toggle(R.string.screenshots, Settings.SCREENSHOTS, false)
+            val traces = File(filesDir, TraceProvider.FILE)
+            if (traces.length() >= TraceProvider.MAX_BYTES) {
+                list.addView(TextView(this).apply { setText(R.string.traces_full) })
+            }
             action(R.string.send_traces) { sendTraces() }
+            action(R.string.delete_traces) {
+                traces.delete()
+                list.addView(TextView(this).apply { setText(R.string.traces_deleted) })
+            }
         }
     }
 
@@ -148,7 +160,8 @@ class SettingsActivity : Activity() {
      * owner's secret key can open it.
      */
     internal fun sendTraces() {
-        val uri = Uri.Builder().scheme("content").authority(TraceProvider.AUTHORITY).path(TraceProvider.FILE).build()
+        val authority = packageName + TraceProvider.AUTHORITY_SUFFIX
+        val uri = Uri.Builder().scheme("content").authority(authority).path(TraceProvider.FILE).build()
         val share = Intent(Intent.ACTION_SEND)
             .setPackage(TAILSCALE)
             .setType(TraceProvider.TYPE)
@@ -163,6 +176,7 @@ class SettingsActivity : Activity() {
 
     private fun eraseEverything() {
         Settings.personalFiles(this).forEach(File::delete)
+        guarded { Vault.forget() }
         store.edit()
             .remove(Settings.RECENTS)
             .putInt(Settings.ERASURES, store.getInt(Settings.ERASURES, 0) + 1)
@@ -182,10 +196,10 @@ class SettingsActivity : Activity() {
         }
     }
 
-    private fun toggle(label: Int, key: String) {
+    private fun toggle(label: Int, key: String, default: Boolean = true) {
         list.addView(Switch(this).apply {
             setText(label)
-            isChecked = store.getBoolean(key, true)
+            isChecked = store.getBoolean(key, default)
             setOnCheckedChangeListener { _: View, on: Boolean -> store.edit().putBoolean(key, on).apply() }
         })
     }
