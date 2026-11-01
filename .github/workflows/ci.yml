@@ -5,34 +5,49 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
+    paths:
+      - "crates/**"
+      - "fuzz/**"
+      - "supply-chain/**"
+      - "Cargo.*"
+      - "deny.toml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/ci.yml"
+
+# A new push makes the run before it pointless.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 # Nothing here publishes or comments, so the token can only read.
 permissions:
   contents: read
 
 jobs:
+  # The checks that compile nothing come first, and stop a bad change for free.
   rust:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # rustup reads the pinned compiler from rust-toolchain.toml.
       - run: rustup toolchain install
-      - run: rustup component add clippy
       - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
         with:
           tool: cargo-deny,cargo-vet
-      - run: cargo test --workspace
-      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo deny check
       - run: cargo vet --locked
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
 
   fuzz-smoke:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
     env:
-      # Short enough for every push. The long runs stay a local check in AGENTS.md.
+      # The long runs stay a local check in AGENTS.md.
       FUZZ_SECONDS: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,6 +55,11 @@ jobs:
           persist-credentials: false
       # cargo-fuzz needs nightly's sanitizer flags, for the fuzzing build alone.
       - run: rustup toolchain install nightly --profile minimal
-      - run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - uses: taiki-e/cache-cargo-install-action@9ee83daaa7b96a6fab930949ecf1122bba04a389 # v3.0.8
+        with:
+          tool: cargo-fuzz@0.13.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: fuzz
       - working-directory: fuzz
         run: cargo +nightly fuzz run fuzz_engine -- -max_total_time="$FUZZ_SECONDS"
