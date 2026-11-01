@@ -22,7 +22,9 @@ These are what CI runs, and none of them needs private data. On macOS the fuzz r
 
 ## Signing off
 
-Every commit carries a [Developer Certificate of Origin](https://developercertificate.org/) sign-off: your statement that you may contribute the change under the project's licence. `git commit -s` adds the line. Use your real name.
+Every commit from an external contributor carries a [Developer Certificate of Origin](https://developercertificate.org/) sign-off: your statement that you may contribute the change under the project's licence. `git commit -s` adds the line. Use your real name.
+
+Every commit must also be GPG-signed. The two are distinct and neither replaces the other: the sign-off is a line of text in the commit message that states your right to contribute, and the GPG signature proves who made the commit. `git commit -S -s` does both.
 
 ## What a stranger can build today
 
