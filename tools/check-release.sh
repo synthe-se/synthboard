@@ -18,9 +18,8 @@ trap 'rm -rf "$scratch"' EXIT
 fail() { echo "FAIL: $1"; exit 1; }
 digest() { shasum -a 256 | cut -d ' ' -f 1; }
 expected() { awk -v name="$1" '$2 == name { print $1 }' "$hashes"; }
-# The functions that call a symbol through the PLT, sorted and named.
-callers() { awk -v target="<$1@plt>" '/^[0-9a-f]+ <.*>:$/ { name = substr($2, 2, length($2) - 3) }
-    index($0, target) && !/>:$/ { print name }' "$scratch/code" | sort -u; }
+# The packed library has no local names, so calls are counted rather than named.
+calls() { grep -v ">:$" "$scratch/code" | grep -c "<$1@plt>"; }
 
 permissions=$("$tools/aapt2" dump permissions "$apk" | grep -c "uses-permission" || true)
 [ "$permissions" = 0 ] || fail "the APK declares permissions"
@@ -61,10 +60,10 @@ grep -q BIND_NOW "$scratch/dynamic" || fail "the library binds lazily"
 bin=$(dirname "$readelf")
 "$bin/llvm-nm" -D --defined-only "$library" | grep -q ' T __wrap_free$' || fail "free is not wrapped"
 "$bin/llvm-objdump" -d --no-show-raw-insn "$library" > "$scratch/code"
-[ "$(callers free)" = "__wrap_free" ] || fail "something frees without the wipe: $(callers free)"
+[ "$(calls free)" = 1 ] || fail "something frees without the wipe"
 # `realloc` frees a moved block unwiped, so it stays where no text or gesture goes.
-unknown=$(callers realloc | grep -vE '^__emutls_get_address$|__double_or_nothing|money_get' || true)
-[ -z "$unknown" ] || fail "realloc has a new caller: $unknown"
+# Seven: `__emutls_get_address`, and six in libc++ `money_get` and `__double_or_nothing`.
+[ "$(calls realloc)" = 7 ] || fail "realloc has new callers: $(calls realloc)"
 
 # Tracked, so that a change shows in a diff and the clean tree below covers it. These
 # are public facts. The archive is linked rather than packed, so its file is compared.
