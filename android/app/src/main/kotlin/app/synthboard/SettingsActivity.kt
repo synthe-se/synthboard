@@ -36,6 +36,7 @@ object Settings {
     const val FILE = "emoji"
     const val SCREENSHOTS = "screenshots"
     const val NEURAL = "neural"
+    const val AUTOCORRECT = "autocorrect"
     const val MEMORY_FILE = "memory.sealed"
     const val MEMORY_SECRET_FILE = "memory.key"
     const val MEMORY_PUBLIC_FILE = "memory.pub"
@@ -130,6 +131,7 @@ class SettingsActivity : Activity() {
         toggle(R.string.haptics, Settings.HAPTICS)
         toggle(R.string.trail, Settings.TRAIL)
         toggle(R.string.qwerty, Settings.QWERTY, false)
+        toggle(R.string.autocorrect, Settings.AUTOCORRECT)
         val label = TextView(this)
         fun show(percent: Int) {
             label.text = getString(R.string.height, percent)

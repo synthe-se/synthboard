@@ -161,6 +161,7 @@ class SynthboardService : InputMethodService() {
         send(Event.Alphabet(saved.getBoolean(Settings.QWERTY, false)))
         send(Event.Screenshots(saved.getBoolean(Settings.SCREENSHOTS, false)))
         send(Event.Neural(saved.getBoolean(Settings.NEURAL, false)))
+        send(Event.AutoCorrect(saved.getBoolean(Settings.AUTOCORRECT, true)))
         send(Event.Traces(saved.getBoolean(Settings.TRACES, true)))
     }
 

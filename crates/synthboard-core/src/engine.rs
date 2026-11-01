@@ -303,6 +303,8 @@ crate::wire_enum! {
         Screenshots { allowed: bool },
         /// Whether the network takes part in choosing words, or only in the traces.
         Neural { deciding: bool },
+        /// Whether typed words are corrected as they end.
+        AutoCorrect { on: bool },
         /// Whether the user records traces.
         Traces { on: bool },
         /// A screen reader's finger lifted, which types the key under it.
@@ -499,6 +501,7 @@ pub struct Engine {
     tracing: bool,
     neural: Option<Arc<Neural>>,
     neural_decides: bool,
+    autocorrect: bool,
     fresh: Vec<(String, Vec<[f32; 2]>)>,
     learned: Vec<Learned>,
     /// The text changed behind the keyboard, and `learned` waits to be checked against it.
@@ -945,6 +948,7 @@ impl Engine {
             tracing: false,
             neural: None,
             neural_decides: false,
+            autocorrect: true,
             fresh: Vec::new(),
             learned: Vec::new(),
             unsettled: false,
@@ -1038,6 +1042,7 @@ impl Engine {
             height_scale: self.height_scale,
             neural: self.neural.clone(),
             neural_decides: self.neural_decides,
+            autocorrect: self.autocorrect,
             tracing: self.tracing,
             screenshots: self.screenshots,
             // A panic must not open a secret field: its rules outlive the crash.
@@ -1093,6 +1098,7 @@ impl Engine {
             Event::Hidden => self.hidden(),
             Event::Screenshots { allowed } => self.screenshots = allowed,
             Event::Neural { deciding } => self.neural_decides = deciding,
+            Event::AutoCorrect { on } => self.autocorrect = on,
             Event::Traces { on } => self.tracing = on,
             Event::Alphabet { qwerty } => {
                 let alphabet = if qwerty { Alphabet::Qwerty } else { Alphabet::Azerty };
@@ -1500,7 +1506,8 @@ impl Engine {
         Some(Revision { old, new })
     }
 
-    /// Puts back the word a revision replaced, as one backspace undoes a correction.
+    /// Puts back the word a revision replaced. The bar offers it: backspace always takes
+    /// a letter, of the last word.
     fn revert_revision(&mut self) -> bool {
         let Some(word) = self.last_word.as_mut() else {
             return false;
@@ -2366,7 +2373,7 @@ impl Engine {
         let best = self
             .corrections(&typing)
             .into_iter()
-            .find(|(_, cost, complete)| *complete && *cost <= AUTOCORRECT_COST);
+            .find(|(_, cost, complete)| self.autocorrect && *complete && *cost <= AUTOCORRECT_COST);
         if let Some((word, _, _)) = best {
             let written = case_like(&self.memory.form(&word), &typing.text);
             self.delete_units(utf16_len(&typing.text));
@@ -2483,7 +2490,7 @@ impl Engine {
             self.request_context();
             return;
         }
-        if self.revert_correction() || self.revert_revision() {
+        if self.revert_correction() {
             return;
         }
         if self.spacing == Spacing::Phantom && self.last_word.is_none() {
@@ -2785,6 +2792,7 @@ impl Engine {
             word.revisable = revisable;
             word.revision = revision;
         }
+        self.offer_old_word();
     }
 
     /// What the reader that did not decide would have written, for the traces: the
@@ -2824,6 +2832,19 @@ impl Engine {
         written(self.shift, &self.memory, self.grammar.as_deref(), word)
     }
 
+    /// Offers the word a revision replaced, in the left slot of the bar.
+    fn offer_old_word(&mut self) {
+        let Some(word) = self.last_word.as_ref() else {
+            return;
+        };
+        let Some(revision) = word.revision.as_ref() else {
+            return;
+        };
+        let slot = |index: usize| word.alternatives.get(index).cloned().unwrap_or_default();
+        let command = Command::Suggestions { center: slot(CENTER_SLOT), left: revision.old.clone(), right: slot(RIGHT_SLOT) };
+        self.out.push(command);
+    }
+
     fn show_alternatives(&mut self, alternatives: &[String]) {
         let domains = self.offered_domains();
         let shown = if domains.is_empty() { alternatives } else { &domains };
@@ -2848,6 +2869,11 @@ impl Engine {
             return None;
         }
         let slot = self.slot_at(x);
+        if slot == LEFT_SLOT
+            && let Some(revision) = self.last_word.as_ref().and_then(|word| word.revision.as_ref())
+        {
+            return Some(revision.old.clone());
+        }
         let list = match (&self.typing, &self.last_word) {
             (Some(typing), _) => &typing.offered,
             (None, Some(word)) if !word.alternatives.is_empty() => &word.alternatives,
@@ -2961,6 +2987,11 @@ impl Engine {
             self.complete_domain(domain);
             return;
         }
+        if slot == LEFT_SLOT && self.revert_revision() {
+            let alternatives = self.last_word.as_ref().map(|word| word.alternatives.clone()).unwrap_or_default();
+            self.show_alternatives(&alternatives);
+            return;
+        }
         if let Some(typing) = self.typing.take() {
             if let Some(word) = typing.offered.get(slot).cloned() {
                 self.delete_units(utf16_len(&typing.text));
@@ -3006,6 +3037,7 @@ impl Engine {
         self.spacing = word.spacing_after;
         self.show_alternatives(&word.alternatives);
         self.last_word = Some(word);
+        self.offer_old_word();
     }
 }
 
@@ -6252,7 +6284,7 @@ mod tests {
         rig.swipe("peur");
         rig.swipe("aller");
         assert_eq!(rig.text, "Peut aller");
-        rig.tap("⌫");
+        undo_revision(&mut rig);
         assert_eq!(rig.text, "Peur aller");
         rig.engine.confirm_pending();
         assert_eq!(rig.engine.memory.next_after("<s>"), ["peur"]);
@@ -6302,7 +6334,7 @@ mod tests {
         rig.swipe("aller");
         assert_eq!(rig.text, "peut aller");
         assert_eq!(rig.engine.leaning, next_leaning(LANGUAGE_START, FIRST_LANGUAGE));
-        rig.tap("⌫");
+        undo_revision(&mut rig);
         assert_eq!(rig.engine.leaning, LANGUAGE_START);
         assert_eq!(rig.engine.pending.as_ref().unwrap().leaning_before, LANGUAGE_START);
     }
@@ -6316,10 +6348,66 @@ mod tests {
         assert_eq!(lines.first().map(String::as_str), Some("R\tpeur\tpeut"));
         let gesture = lines.get(1).unwrap();
         assert_eq!(gesture.split('\t').nth(4), Some("peut"), "the history holds the final word");
-        let lines = opened_lines(&rig.tap_step("⌫"), &secret);
+        let lines = opened_lines(&undo_revision(&mut rig), &secret);
         assert_eq!(lines, ["R\tpeut\tpeur"]);
         let lines = opened_lines(&rig.tap_step("⌫"), &secret);
         assert_eq!(lines, ["D"]);
+    }
+
+    fn undo_revision(rig: &mut Rig) -> Step {
+        let [left, ..] = SLOT_CENTERS;
+        rig.tap_at((left * rig.engine.width, 10.0))
+    }
+
+    #[test]
+    fn backspace_only_ever_takes_a_letter_of_the_last_word() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("aller");
+        rig.tap("⌫");
+        assert_eq!(rig.text, "peut alle");
+        assert_eq!(rig.engine.memory.next_after("<s>"), ["peut"]);
+    }
+
+    #[test]
+    fn the_bar_offers_the_word_a_revision_replaced() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        let step = rig.swipe_step("aller");
+        assert!(step.commands.iter().any(|c| matches!(c, Command::Suggestions { left, .. } if left == "peur")));
+    }
+
+    #[test]
+    fn a_panic_keeps_the_correction_setting() {
+        let mut rig = plain_rig();
+        rig.send(Event::AutoCorrect { on: false });
+        assert!(!rig.engine.recovered().autocorrect);
+    }
+
+    #[test]
+    fn a_long_press_on_the_bar_reaches_what_the_slot_shows() {
+        let [left, center, _] = SLOT_CENTERS;
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("aller");
+        let width = rig.engine.width;
+        assert_eq!(rig.engine.slot_word(left * width).as_deref(), Some("peur"));
+        let shown = rig.engine.last_word.as_ref().and_then(|word| word.alternatives.first().cloned());
+        assert_eq!(rig.engine.slot_word(center * width), shown);
+        rig.engine.last_word = None;
+        rig.engine.predictions = vec!["merci".to_owned()];
+        assert_eq!(rig.engine.slot_word(center * width).as_deref(), Some("merci"));
+        rig.engine.typing = Some(Typing { offered: vec!["bon".to_owned()], ..Typing::default() });
+        assert_eq!(rig.engine.slot_word(center * width).as_deref(), Some("bon"));
+    }
+
+    #[test]
+    fn typed_words_stay_as_they_are_with_the_correction_off() {
+        let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
+        rig.send(Event::AutoCorrect { on: false });
+        type_word(&mut rig, "yhan");
+        rig.tap_at(rig.space());
+        assert_eq!(rig.text, "yhan ");
     }
 
     #[test]
@@ -6327,7 +6415,7 @@ mod tests {
         let mut rig = plain_subject_rig();
         rig.swipe("peur");
         rig.swipe("aller");
-        rig.tap("⌫");
+        undo_revision(&mut rig);
         assert_eq!(rig.text, "peur aller");
         rig.engine.confirm_pending();
         assert_eq!(rig.engine.memory.next_after("<s>"), ["peur"]);
@@ -6340,7 +6428,7 @@ mod tests {
         let mut rig = plain_subject_rig();
         rig.swipe("peur");
         rig.swipe("aller");
-        rig.tap("⌫");
+        undo_revision(&mut rig);
         rig.tap("⌫");
         assert_eq!(rig.text, "peur alle");
     }
@@ -6350,7 +6438,7 @@ mod tests {
         let mut rig = plain_subject_rig();
         rig.swipe("peur");
         rig.swipe("aller");
-        rig.tap("⌫");
+        undo_revision(&mut rig);
         assert!(!rig.engine.last_word.as_ref().unwrap().revisable);
     }
 
@@ -6370,7 +6458,7 @@ mod tests {
             }
             assert_eq!(rig.engine.expected_selections.len(), 0);
             assert!(rig.engine.last_word.is_some());
-            rig.tap("⌫");
+            undo_revision(&mut rig);
             assert_eq!(rig.text, "peur aller");
             assert_eq!(rig.engine.cursor, utf16_len("peur aller"));
             echo_each_edit(&mut rig);
@@ -6399,7 +6487,7 @@ mod tests {
         rig.swipe("aller");
         let chosen = the_alternatives(&rig).first().unwrap().clone();
         rig.tap_at(CENTER_OF_BAR);
-        rig.tap("⌫");
+        undo_revision(&mut rig);
         assert_eq!(rig.text, format!("peur {chosen}"));
     }
 
