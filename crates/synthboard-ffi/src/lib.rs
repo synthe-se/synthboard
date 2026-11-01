@@ -2,6 +2,7 @@
 //! decodes each call, stops panics at the boundary and encodes the reply. The
 //! only `unsafe` in the project is in `jni`, which moves bytes, and `wipe`, which clears them.
 
+#[cfg(not(fuzzing))]
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, MutexGuard, Once, PoisonError};
 
@@ -67,16 +68,26 @@ pub fn handle(keyboard: &Keyboard, input: &[u8], reply: &mut Vec<u8>) {
     }
 }
 
-/// A panic message could quote what was typed, so none is ever printed.
+/// A panic message could quote what was typed, so none is ever printed. The
+/// fuzzer finds its crashes through the panic hook, so it keeps its own.
 fn silence_panics() {
     static ONCE: Once = Once::new();
-    ONCE.call_once(|| std::panic::set_hook(Box::new(|_| {})));
+    if cfg!(not(fuzzing)) {
+        ONCE.call_once(|| std::panic::set_hook(Box::new(|_| {})));
+    }
 }
 
 /// Runs `work`, turning a panic into the empty result so that the keyboard
 /// process survives. The caller decides how to recover.
+#[cfg(not(fuzzing))]
 fn guarded<T: Default>(work: impl FnOnce() -> T) -> (T, bool) {
     catch_unwind(AssertUnwindSafe(work)).map_or_else(|_| (T::default(), true), |value| (value, false))
+}
+
+/// A panic is what the fuzzer looks for, so here it stays one.
+#[cfg(fuzzing)]
+fn guarded<T: Default>(work: impl FnOnce() -> T) -> (T, bool) {
+    (work(), false)
 }
 
 /// Opens sealed memory and wipes the secret key given for it.

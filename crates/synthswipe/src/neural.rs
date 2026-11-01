@@ -69,7 +69,8 @@ const LEAN_COARSE_POINTS: u16 = 8;
 /// at 1 and 139 at 4 (2026-11-01).
 const LEAN_CONTEXT_BOOST: f32 = 2.0;
 
-const FILE_MAGIC: &[u8; 8] = b"SYNEURO1";
+/// What a model file starts with.
+pub const MODEL_MAGIC: &[u8; 8] = b"SYNEURO1";
 /// Key head: a linear map from a position to `KEY_DIMENSION`, then a square one.
 const FIRST_WEIGHTS: usize = 2 * KEY_DIMENSION;
 const SECOND_WEIGHTS: usize = KEY_DIMENSION * KEY_DIMENSION;
@@ -128,7 +129,7 @@ pub trait Encoder: Send + Sync + fmt::Debug {
 /// are accepted: `None` means this is not a model file.
 #[must_use]
 pub fn split_model(bytes: &[u8]) -> Option<(KeyHead, &[u8])> {
-    let body = bytes.strip_prefix(FILE_MAGIC)?;
+    let body = bytes.strip_prefix(MODEL_MAGIC)?;
     let (head, model) = body.split_at_checked(MODEL_HEAD_BYTES)?;
     let values: Vec<f32> = head.as_chunks::<F32_BYTES>().0.iter().map(|value| f32::from_le_bytes(*value)).collect();
     (values.iter().all(|value| value.is_finite()) && !model.is_empty()).then_some((KeyHead { values }, model))
@@ -590,8 +591,8 @@ mod tests {
     }
 
     fn model_file() -> Vec<u8> {
-        let mut bytes = FILE_MAGIC.to_vec();
-        bytes.resize(FILE_MAGIC.len() + MODEL_HEAD_BYTES, 0);
+        let mut bytes = MODEL_MAGIC.to_vec();
+        bytes.resize(MODEL_MAGIC.len() + MODEL_HEAD_BYTES, 0);
         bytes.push(1);
         bytes
     }
@@ -870,7 +871,7 @@ mod tests {
     fn a_key_scores_what_its_description_shares_with_the_query() {
         let mut bytes = model_file();
         // Second bias of dimension 3 is 1.5, so every key is described by 1.5 there.
-        let at = FILE_MAGIC.len() + (HEAD_VALUES - KEY_DIMENSION + 3) * F32_BYTES;
+        let at = MODEL_MAGIC.len() + (HEAD_VALUES - KEY_DIMENSION + 3) * F32_BYTES;
         bytes.get_mut(at..at + F32_BYTES).unwrap().copy_from_slice(&1.5_f32.to_le_bytes());
         let (head, _) = split_model(&bytes).unwrap();
         let reading = Neural::new(head, Box::new(OneQuery)).read(&layout(), &line(9)).unwrap();
@@ -894,7 +895,7 @@ mod tests {
         *wrong.first_mut().unwrap() = 0;
         assert!(split_model(&wrong).is_none());
         let mut not_finite = model_file();
-        not_finite.get_mut(FILE_MAGIC.len()..FILE_MAGIC.len() + F32_BYTES).unwrap().copy_from_slice(&f32::NAN.to_le_bytes());
+        not_finite.get_mut(MODEL_MAGIC.len()..MODEL_MAGIC.len() + F32_BYTES).unwrap().copy_from_slice(&f32::NAN.to_le_bytes());
         assert!(split_model(&not_finite).is_none());
         assert_eq!(split_model(&model_file()).unwrap().1, [1]);
     }

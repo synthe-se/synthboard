@@ -2759,7 +2759,7 @@ impl Default for Engine {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use synthswipe::{Encoder, MODEL_HEAD_BYTES, split_model};
+    use synthswipe::{Encoder, MODEL_HEAD_BYTES, MODEL_MAGIC, split_model};
 
     use super::*;
 
@@ -3756,7 +3756,7 @@ mod tests {
     }
 
     fn with_network(rig: &mut Rig, works: bool) -> Arc<AtomicUsize> {
-        let mut file = b"SYNEURO1".to_vec();
+        let mut file = MODEL_MAGIC.to_vec();
         file.resize(file.len() + MODEL_HEAD_BYTES, 0);
         file.push(1);
         let runs = Arc::new(AtomicUsize::new(0));

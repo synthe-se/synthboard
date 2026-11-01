@@ -12,6 +12,8 @@ publish = false
 # libraries forbid it in their own root, and the Mac tools stay under this deny.
 unsafe_code = "deny"
 missing_debug_implementations = "warn"
+# `cargo fuzz` sets this one.
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [workspace.lints.clippy]
 unwrap_used = "deny"

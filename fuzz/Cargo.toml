@@ -13,6 +13,7 @@ libfuzzer-sys = "0.4"
 synthboard-core = { path = "../crates/synthboard-core" }
 synthboard-seal = { path = "../crates/synthboard-seal", features = ["legacy"] }
 synthswipe = { path = "../crates/synthswipe" }
+synthswipe-bench = { path = "../crates/synthswipe-bench" }
 
 [[bin]]
 name = "fuzz_wire"
@@ -52,6 +53,27 @@ bench = false
 [[bin]]
 name = "fuzz_loaders"
 path = "fuzz_targets/fuzz_loaders.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_memory"
+path = "fuzz_targets/fuzz_memory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_lexicon_csv"
+path = "fuzz_targets/fuzz_lexicon_csv.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_traces"
+path = "fuzz_targets/fuzz_traces.rs"
 test = false
 doc = false
 bench = false
