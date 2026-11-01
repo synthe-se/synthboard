@@ -8,11 +8,16 @@ publish.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Links ONNX Runtime, which `data/raw/ort` holds for the phone only.
+onnx = ["dep:synthswipe-onnx"]
+
 [dependencies]
 zeroize = "1.9.1"
 synthboard-core = { path = "../synthboard-core" }
 synthboard-seal = { path = "../synthboard-seal" }
 synthswipe = { path = "../synthswipe" }
+synthswipe-onnx = { path = "../synthswipe-onnx", optional = true }
 
 [lints]
 workspace = true

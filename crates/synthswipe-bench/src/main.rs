@@ -6,6 +6,7 @@
 
 #![allow(clippy::cast_precision_loss)]
 
+mod export;
 mod load;
 
 use std::collections::{BTreeMap, HashMap};
@@ -38,6 +39,15 @@ struct Outcome {
 }
 
 static GRAMMAR: OnceLock<(Grammar, f32)> = OnceLock::new();
+
+/// Context strengths tried on the owner's gestures.
+const CONTEXT_FACTORS: [f32; 6] = [0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
+/// The weight of agreement in `synthboard-core`.
+const GRAMMAR_FACTOR: f32 = 10.0;
+
+fn tokens_of(line: &str) -> Vec<String> {
+    line.split(' ').filter(|word| !word.is_empty()).map(str::to_owned).collect()
+}
 
 fn grammar_score(history: &[String], word: &str) -> f32 {
     GRAMMAR.get().map_or(0.0, |(grammar, weight)| weight * grammar.score(history, word))
@@ -151,13 +161,20 @@ fn run_probe(gestures: &[Gesture], params: &Params, previous: &str, words: &str,
 
 /// Replays the user's own gestures. The truth is the word they kept: the one
 /// they picked from the bar, or the decoded word if they did not undo it.
-fn run_personal(text: &str, params: &Params, gestures: &[Gesture]) {
+#[allow(clippy::too_many_lines)]
+fn run_personal(text: &str, params: &Params, gestures: &[Gesture], neural: Option<&synthswipe::Neural>, root: &std::path::Path) {
+    let table = Affinities::from_bytes(&std::fs::read(root.join("../../android/app/src/main/assets/affinity.bin")).unwrap_or_default());
+    let forms = std::fs::read_to_string(root.join("../../android/app/src/main/assets/forms.tsv")).unwrap_or_default();
+    let grammar = synthswipe::Grammar::parse(&forms);
+    let (mut recorded, mut differed, mut first_right, mut other_right) = (0, 0, 0, 0);
+    let mut in_context = [0; CONTEXT_FACTORS.len()];
+    let mut geometry_in_context = 0;
     let Some(lexicon) = gestures.iter().find(|g| g.cell.language == "fr").map(|g| g.lexicon.clone()) else {
         return;
     };
     let mut layout = None;
     let lines: Vec<&str> = text.lines().collect();
-    let (mut total, mut hits) = (0, 0);
+    let (mut total, mut hits, mut blended) = (0, 0, 0);
     let mut misses: BTreeMap<String, usize> = BTreeMap::new();
     for (index, line) in lines.iter().enumerate() {
         let fields: Vec<&str> = line.split('\t').collect();
@@ -174,7 +191,7 @@ fn run_personal(text: &str, params: &Params, gestures: &[Gesture]) {
                     layout = Some(valid);
                 }
             }
-            ["G", word, _, points, ..] => {
+            ["G", word, _, points, rest @ ..] => {
                 let later = lines.iter().skip(index + 1).take_while(|line| !line.starts_with('G'));
                 let mut rejected = false;
                 let mut truth = word.to_lowercase();
@@ -201,11 +218,43 @@ fn run_personal(text: &str, params: &Params, gestures: &[Gesture]) {
                     })
                     .collect();
                 let Some(layout) = &layout else { continue };
-                let ranked = decode_in_context(layout, &lexicon, &samples, params, 3, |_| 0.0).unwrap_or_default();
+                let pool = if neural.is_some() { synthswipe::POOL } else { 3 };
+                let lean = neural.map_or(*params, |_| synthswipe::lean(params));
+                let ranked = decode_in_context(layout, &lexicon, &samples, &lean, pool, |_| 0.0).unwrap_or_default();
                 if rejected {
                     continue;
                 }
                 total += 1;
+                let other = rest.get(1).copied().unwrap_or_default().to_lowercase();
+                if !other.is_empty() {
+                    recorded += 1;
+                    if other != word.to_lowercase() {
+                        differed += 1;
+                        first_right += usize::from(word.to_lowercase() == truth);
+                        other_right += usize::from(other == truth);
+                    }
+                }
+                let history: Vec<String> = rest.first().map_or_else(Vec::new, |line| tokens_of(line));
+                let previous = history.last().cloned().unwrap_or_else(|| synthswipe::SENTENCE_START.to_owned());
+                let context = |word: &str| table.score(&previous, word) + GRAMMAR_FACTOR * grammar.score(&history, word);
+                let reading = neural.and_then(|neural| neural.read(layout, &samples));
+                if let Some(reading) = &reading {
+                    let full = decode_in_context(layout, &lexicon, &samples, params, 3, context).unwrap_or_default();
+                    geometry_in_context += usize::from(full.first().is_some_and(|c| c.surface.to_lowercase() == truth));
+                    for (slot, factor) in in_context.iter_mut().zip(CONTEXT_FACTORS) {
+                        let lean = synthswipe::lean(params);
+                        let tuned = Params { context_weight: lean.context_weight * factor, ..lean };
+                        let found = decode_in_context(layout, &lexicon, &samples, &tuned, synthswipe::POOL, context).unwrap_or_default();
+                        let blended = reading.blend(&lexicon, &found, &tuned, synthswipe::NETWORK_WEIGHT, synthswipe::FREQUENCY_WEIGHT, context);
+                        *slot += usize::from(blended.first().is_some_and(|c| c.surface.to_lowercase() == truth));
+                    }
+                }
+                let read = reading.map(|reading| {
+                    reading.blend(&lexicon, &ranked, &lean, synthswipe::NETWORK_WEIGHT, synthswipe::FREQUENCY_WEIGHT, |_| 0.0)
+                });
+                if read.and_then(|words| words.first().map(|c| c.surface.to_lowercase())).is_some_and(|word| word == truth) {
+                    blended += 1;
+                }
                 if ranked.first().is_some_and(|c| c.surface.to_lowercase() == truth) {
                     hits += 1;
                 } else {
@@ -215,6 +264,16 @@ fn run_personal(text: &str, params: &Params, gestures: &[Gesture]) {
             }
             _ => {}
         }
+    }
+    if neural.is_some() {
+        // Counts only: this line may be shown beyond the volume.
+        println!("{hits}/{total} lean geometry, {blended}/{total} with the network, without context");
+        println!("context tables: {} forms bytes; with context: geometry {geometry_in_context}/{total}", forms.len());
+        for (factor, count) in CONTEXT_FACTORS.iter().zip(in_context) {
+            println!("with context times {factor}, network: {count}/{total}");
+        }
+        println!("recorded the other reader on {recorded}; they differed on {differed}: the written word stayed {first_right}, the other was right {other_right}");
+        return;
     }
     let mut worst: Vec<_> = misses.into_iter().collect();
     worst.sort_by_key(|entry| std::cmp::Reverse(entry.1));
@@ -315,6 +374,8 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let mut should_tune = false;
     let mut skip_futo = false;
     let mut personal = false;
+    let mut export_directory = None;
+    let mut neural_file: Option<PathBuf> = None;
     let mut spoken = false;
     let mut units = load::Units::default();
     let mut probe: Option<(String, String)> = None;
@@ -325,6 +386,8 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
             "--tune" => should_tune = true,
+            "--export" => export_directory = Some(PathBuf::from(arguments.next().ok_or("--export needs a directory")?)),
+            "--neural" => neural_file = Some(PathBuf::from(arguments.next().ok_or("--neural needs a file")?)),
             "--no-futo" => skip_futo = true,
             "--intent" => params.intent_weight = arguments.next().ok_or("--intent needs a value")?.parse()?,
             "--personal" => personal = true,
@@ -385,6 +448,41 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         started.elapsed().as_millis()
     );
 
+    if let Some(directory) = &export_directory {
+        std::fs::create_dir_all(directory)?;
+        let layouts_directory = futo.join("swipe-5/layouts");
+        let filter = FutoFilter {
+            layouts_directory: &layouts_directory,
+            french: french.clone(),
+            english: english.clone(),
+            french_affinities: None,
+            english_affinities: None,
+            tuning_only: false,
+            max_rows: usize::MAX,
+            units,
+        };
+        let sources = [
+            ("futo-train", "train.jsonl"),
+            ("futo-dev", "dev.jsonl"),
+            ("futo-test", "test.jsonl"),
+            ("futo-2", "swipe-2/swipe2.jsonl"),
+            ("futo-3", "swipe-3/swipe3.jsonl"),
+            ("futo-4", "swipe-4/swipe4.jsonl"),
+            ("futo-5", "swipe-5/swipe5.jsonl"),
+        ];
+        for (name, file) in sources {
+            let mut writer = export::Writer::create(directory, name)?;
+            load::futo_each(&futo.join(file), &filter, |gesture, session| writer.write(&gesture, session))?;
+            eprintln!("{name}: {} gestures", writer.finish()?);
+        }
+        let mut writer = export::Writer::create(directory, "heliboard-fr")?;
+        for gesture in load::heliboard(&heliboard, "fr", "fr", usize::MAX, &lexicons)? {
+            let group = if gesture.tuning { "tune" } else { "test" };
+            writer.write(&gesture, group)?;
+        }
+        eprintln!("heliboard-fr: {} gestures", writer.finish()?);
+        return Ok(());
+    }
     let mut gestures = load::heliboard(&heliboard, "fr", "fr", usize::MAX, &lexicons)?;
     gestures.extend(load::heliboard(&heliboard, "en-US", "en", ENGLISH_FILES, &lexicons)?);
     if !skip_futo {
@@ -420,7 +518,11 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     if personal {
         let text = std::fs::read_to_string(root.join("personal/traces.tsv"))?;
-        run_personal(&text, &params, &gestures);
+        #[cfg(feature = "onnx")]
+        let model = neural_file.as_ref().map(std::fs::read).transpose()?.and_then(|bytes| synthswipe_onnx::load(&bytes));
+        #[cfg(not(feature = "onnx"))]
+        let model = neural_file.as_ref().and(None);
+        run_personal(&text, &params, &gestures, model.as_ref(), &root);
         return Ok(());
     }
     if let Some((previous, words)) = probe {

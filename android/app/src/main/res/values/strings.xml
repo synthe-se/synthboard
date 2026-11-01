@@ -25,6 +25,7 @@
     <string name="key_space">Space</string>
     <string name="undo">Undo</string>
     <string name="screenshots">Allow screenshots of the keyboard</string>
+    <string name="neural">Let the network choose words</string>
     <string name="traces_full">Trace file full: recording has stopped. Send and delete it.</string>
     <string name="delete_traces">Delete my traces</string>
     <string name="traces_deleted">Traces deleted.</string>

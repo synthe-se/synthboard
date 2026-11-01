@@ -47,6 +47,7 @@ cd "$root"
 elsewhere=$(grep -rlE '\bunsafe\b' crates --include='*.rs' | grep -vE 'crates/synthboard-ffi/src/(jni|wipe|lib)\.rs' || true)
 [ -z "$elsewhere" ] || fail "unsafe code outside the two files allowed: $elsewhere"
 ! grep -rqE 'std::net|java\.net' crates android/app/src || fail "network code"
+! "$(dirname "$readelf")/llvm-nm" -D --undefined-only "$library" | grep -qE " (socket|connect|sendto|recvfrom|getaddrinfo)(@|$)" || fail "the library imports the network"
 [ -f android/gradle/verification-metadata.xml ] || fail "Gradle dependencies are not verified"
 grep -q distributionSha256Sum android/gradle/wrapper/gradle-wrapper.properties || fail "the Gradle distribution is not pinned"
 cargo deny check

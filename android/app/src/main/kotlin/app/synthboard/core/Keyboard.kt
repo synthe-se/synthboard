@@ -83,6 +83,7 @@ class Keyboard {
     fun loadEmoji(bytes: ByteArray): List<EmojiGroup> = (send(Call.LoadEmoji(bytes)) as Reply.Emoji).groups
 
     fun loadLexicon(bytes: ByteArray) = done(Call.LoadLexicon(bytes))
+    fun loadNeural(bytes: ByteArray) = done(Call.LoadNeural(bytes))
 
     fun newMemoryKeys(): ByteArray = (send(Call.NewMemoryKeys) as Reply.Bytes).bytes
 

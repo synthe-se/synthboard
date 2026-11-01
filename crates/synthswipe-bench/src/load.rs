@@ -435,12 +435,29 @@ fn previous_word(sentence: Option<&str>, index: Option<usize>) -> Option<String>
 
 /// Loads a FUTO JSONL file. Rows without language or layout are English QWERTY.
 pub fn futo(path: &Path, filter: &FutoFilter<'_>) -> Result<Vec<Gesture>> {
-    let mut layouts = HashMap::new();
     let mut gestures = Vec::new();
+    futo_each(path, filter, |gesture, _| {
+        gestures.push(gesture);
+        Ok(())
+    })?;
+    Ok(gestures)
+}
+
+/// Hands each gesture of a FUTO file to `visit` with its session, without
+/// keeping them: the training files are too large to hold.
+pub fn futo_each(
+    path: &Path,
+    filter: &FutoFilter<'_>,
+    mut visit: impl FnMut(Gesture, &str) -> Result<()>,
+) -> Result<()> {
+    let mut layouts = HashMap::new();
     let reader = BufReader::new(fs::File::open(path)?);
     for line in reader.lines().take(filter.max_rows) {
         let row: FutoRow = serde_json::from_str(&line?)?;
-        gestures.extend(futo_gesture(row, filter, &mut layouts)?);
+        let session = row.session.clone();
+        if let Some(gesture) = futo_gesture(row, filter, &mut layouts)? {
+            visit(gesture, &session)?;
+        }
     }
-    Ok(gestures)
+    Ok(())
 }

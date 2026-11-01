@@ -13,6 +13,7 @@ mod grammar;
 mod layout;
 mod lexicon;
 mod marks;
+mod neural;
 mod shark2;
 mod taps;
 #[cfg(test)]
@@ -24,4 +25,5 @@ pub use grammar::Grammar;
 pub use layout::{Key, Layout, LayoutError};
 pub use lexicon::{Entry, Lexicon, fold};
 pub use taps::{Correction, correct};
+pub use neural::{Encoder, FEATURES, FRAMES, INPUT_VALUES, FREQUENCY_WEIGHT, KeyHead, MODEL_HEAD_BYTES, NETWORK_WEIGHT, Neural, OUTPUT_VALUES, POOL, Reading, lean, split_model};
 pub use shark2::{Candidate, DecodeError, Params, decode, decode_in_context};

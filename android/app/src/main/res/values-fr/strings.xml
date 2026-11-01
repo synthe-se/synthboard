@@ -25,6 +25,7 @@
     <string name="key_space">Espace</string>
     <string name="undo">Annuler</string>
     <string name="screenshots">Autoriser les captures du clavier</string>
+    <string name="neural">Laisser le réseau choisir les mots</string>
     <string name="traces_full">Fichier de traces plein : l’enregistrement est arrêté. Envoie-le puis supprime-le.</string>
     <string name="delete_traces">Supprimer mes traces</string>
     <string name="traces_deleted">Traces supprimées.</string>

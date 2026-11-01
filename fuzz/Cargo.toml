@@ -57,3 +57,10 @@ doc = false
 bench = false
 
 [workspace]
+
+[[bin]]
+name = "fuzz_neural"
+path = "fuzz_targets/fuzz_neural.rs"
+test = false
+doc = false
+bench = false

@@ -39,6 +39,35 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for Wiping<A> {
 #[global_allocator]
 static ALLOCATOR: Wiping<std::alloc::System> = Wiping(std::alloc::System);
 
+// ONNX Runtime is C++ and allocates behind the Rust allocator, so its blocks, which
+// hold the gesture, are wiped where every one of them ends: `free`. The Gradle task
+// links with `--wrap=free`, which sends the calls of this library here. The Rust
+// allocator above stays too: it knows exact sizes, and works without that flag.
+#[cfg(target_os = "android")]
+mod native {
+    use std::ffi::c_void;
+    use std::hint::black_box;
+
+    unsafe extern "C" {
+        fn __real_free(block: *mut c_void);
+        fn malloc_usable_size(block: *const c_void) -> usize;
+    }
+
+    /// Zeroes a block, then frees it.
+    ///
+    /// # Safety
+    /// The contract of `free`: the linker sends its calls here.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn __wrap_free(block: *mut c_void) {
+        if !block.is_null() {
+            // SAFETY: a live block from `malloc` has this many usable bytes.
+            unsafe { block.cast::<u8>().write_bytes(0, malloc_usable_size(block)) };
+        }
+        // SAFETY: the caller's contract is passed on unchanged.
+        unsafe { __real_free(black_box(block)) };
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::alloc::System;

@@ -1,0 +1,20 @@
+[package]
+name = "synthswipe-onnx"
+description = "Runs the synthswipe model with a minimal ONNX Runtime"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# Nothing to link a test against on a machine without the runtime: it is tested
+# through `neural-train prod`, which runs the real model file.
+[lib]
+test = false
+doctest = false
+
+[dependencies]
+# Pinned: the 2.0 line is still in release candidates, and this one matches ONNX Runtime 1.31.
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "api-31"] }
+synthswipe = { path = "../synthswipe" }
+
+[lints]
+workspace = true

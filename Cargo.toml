@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/synthswipe", "crates/synthswipe-bench", "crates/synthboard-core", "crates/synthboard-ffi", "crates/synthboard-seal"]
+members = ["crates/synthswipe", "crates/synthswipe-bench", "crates/synthswipe-onnx", "crates/synthboard-core", "crates/synthboard-ffi", "crates/synthboard-seal"]
 
 [workspace.package]
 version = "0.0.0"

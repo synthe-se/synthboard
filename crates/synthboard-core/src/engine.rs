@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use synthboard_seal::KEY_BYTES;
-use synthswipe::{fold, Affinities, Grammar, Layout, Lexicon, Params, signature, signature_distance, SENTENCE_START, Sample, correct, decode_in_context, tokens};
+use synthswipe::{FREQUENCY_WEIGHT, NETWORK_WEIGHT, Neural, POOL, lean, fold, Affinities, Grammar, Layout, Lexicon, Params, signature, signature_distance, SENTENCE_START, Sample, correct, decode_in_context, tokens};
 use unicode_segmentation::UnicodeSegmentation;
 use zeroize::Zeroize;
 
@@ -272,6 +272,8 @@ crate::wire_enum! {
         Alphabet { qwerty: bool },
         /// Whether the user allows screenshots of the keyboard.
         Screenshots { allowed: bool },
+        /// Whether the network takes part in choosing words, or only in the traces.
+        Neural { deciding: bool },
     }
 }
 
@@ -311,6 +313,9 @@ struct Typing {
     taps: Vec<[f32; 2]>,
     /// What the bar offers, in slot order: centre, left, right.
     offered: Vec<String>,
+    /// What is left of a swiped word after backspace, with no letter added yet.
+    /// A new gesture then means another try, and replaces it.
+    remnant: bool,
 }
 
 /// How much of the saved memory is in RAM, which it leaves whenever the keyboard
@@ -376,6 +381,8 @@ enum Touch {
 
 /// The whole keyboard.
 #[derive(Debug)]
+// Each flag is an independent switch of the shell or a fact about the session.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Engine {
     lexicon: Option<Arc<Lexicon>>,
     affinities: Option<Arc<Affinities>>,
@@ -399,6 +406,8 @@ pub struct Engine {
     retry: Option<Retry>,
     held: Held,
     screenshots: bool,
+    neural: Option<Arc<Neural>>,
+    neural_decides: bool,
     /// Memory waiting to be sealed, with the key to seal it to.
     unsaved: Option<(Arc<Memory>, [u8; KEY_BYTES])>,
     /// The shift state when the current word began.
@@ -530,6 +539,7 @@ pub struct Decoding {
     lexicon: Arc<Lexicon>,
     affinities: Option<Arc<Affinities>>,
     grammar: Option<Arc<Grammar>>,
+    neural: Option<Arc<Neural>>,
     memory: Arc<Memory>,
     layout: Layout,
     params: Params,
@@ -559,10 +569,20 @@ impl Decoding {
         let context = |word: &str| self.context(word);
         let extra = self.memory.extra_words();
         let wanted = SUGGESTIONS + self.retry.as_ref().map_or(0, |retry| retry.words.len());
-        let mut ranked =
-            decode_in_context(&self.layout, &self.lexicon, path, &self.params, wanted, context).unwrap_or_default();
+        let reading = self.neural.as_ref().and_then(|neural| neural.read(&self.layout, path));
+        let pool = if reading.is_some() { wanted.max(POOL) } else { wanted };
+        let params = if reading.is_some() { lean(&self.params) } else { self.params };
+        let read = |lexicon| {
+            let found = decode_in_context(&self.layout, lexicon, path, &params, pool, context).unwrap_or_default();
+            match &reading {
+                Some(reading) => reading.blend(lexicon, &found, &params, NETWORK_WEIGHT, FREQUENCY_WEIGHT, context),
+                None => found,
+            }
+        };
+        let mut ranked = read(&self.lexicon);
+        ranked.truncate(wanted);
         if let Some(extra) = &extra {
-            ranked.extend(decode_in_context(&self.layout, extra, path, &self.params, wanted, context).unwrap_or_default());
+            ranked.extend(read(extra));
             ranked.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.surface.cmp(b.surface)));
             ranked.truncate(wanted);
         }
@@ -615,6 +635,13 @@ fn icon_of(action: &Action) -> Icon {
     }
 }
 
+/// A word without its last character, as a person sees characters.
+fn without_last_character(word: &str) -> String {
+    let mut left: Vec<&str> = word.graphemes(true).collect();
+    left.pop();
+    left.concat()
+}
+
 fn attaches_to_word(text: &str) -> bool {
     matches!(text, "," | "." | ")" | "]" | "}")
 }
@@ -638,6 +665,8 @@ impl Engine {
             retry: None,
             held: Held::Nothing,
             screenshots: false,
+            neural: None,
+            neural_decides: false,
             unsaved: None,
             word_shift: Shift::default(),
             undo: None,
@@ -687,6 +716,11 @@ impl Engine {
         self.affinities = Some(affinities);
         self.grammar = Some(grammar);
         self.next_words = Some(next_words);
+    }
+
+    /// Gestures work without it: the geometry then answers alone.
+    pub fn set_neural(&mut self, neural: Arc<Neural>) {
+        self.neural = Some(neural);
     }
 
     pub fn set_trace_key(&mut self, key: [u8; KEY_BYTES]) {
@@ -766,6 +800,7 @@ impl Engine {
             }
             Event::Hidden => self.hidden(),
             Event::Screenshots { allowed } => self.screenshots = allowed,
+            Event::Neural { deciding } => self.neural_decides = deciding,
             Event::Alphabet { qwerty } => {
                 let alphabet = if qwerty { Alphabet::Qwerty } else { Alphabet::Azerty };
                 if alphabet != self.alphabet {
@@ -1386,6 +1421,9 @@ impl Engine {
     }
 
     fn begin_gesture(&mut self, path: Vec<Sample>, start: u64) {
+        if let Some(typing) = self.typing.take_if(|typing| typing.remnant) {
+            self.delete_units(utf16_len(&typing.text));
+        }
         self.deadline = None;
         self.press(-1);
         self.out.push(Command::Vibrate { kind: Haptic::GestureStart });
@@ -1677,6 +1715,7 @@ impl Engine {
             }
             let tap = self.tap_point;
             let typing = self.typing.get_or_insert_with(Typing::default);
+            typing.remnant = false;
             typing.text.push_str(&cased);
             typing.taps.push(tap);
         } else {
@@ -1939,11 +1978,12 @@ impl Engine {
                 self.trace("D".to_owned());
                 self.failed_gesture = Some(word.gesture.clone()).filter(|gesture| !gesture.is_empty());
                 self.note_retry(&word.text, &word.gesture);
-                // Backspace after a swipe removes the whole word (B-7).
-                self.delete_units(utf16_len(&word.text));
-                self.spacing = Spacing::None;
-                self.clear_suggestions();
-                self.refresh_shift();
+                // One character at a time, since one is often all that is wrong. A
+                // drag on the key still takes whole words. What is left reads as
+                // typing, so that letters added to it and corrections see all of it.
+                self.delete_one();
+                self.typing = self.typing_from(&without_last_character(&word.text));
+                self.offer_corrections();
                 return;
             }
         let typing = self.typing.take().map(|mut typing| {
@@ -1954,6 +1994,18 @@ impl Engine {
         self.delete_one();
         self.typing = typing.filter(|typing| !typing.text.is_empty());
         self.offer_corrections();
+    }
+
+
+    /// Typing that holds a word already on screen, each letter tapped on its own key.
+    /// A letter with no key leaves plain text.
+    fn typing_from(&self, word: &str) -> Option<Typing> {
+        let layout = self.board.as_ref()?.layout.as_ref()?;
+        let taps: Option<Vec<[f32; 2]>> = word
+            .chars()
+            .map(|letter| layout.center(fold(&letter.to_string()).first().copied()?))
+            .collect();
+        (!word.is_empty()).then_some(Typing { text: word.to_owned(), taps: taps?, offered: Vec::new(), remnant: true })
     }
 
     /// Removes the word before the cursor, with the spaces after it.
@@ -2069,6 +2121,7 @@ impl Engine {
             lexicon: self.lexicon.clone()?,
             affinities: self.affinities.clone(),
             grammar: self.grammar.clone(),
+            neural: self.neural.clone().filter(|_| self.neural_decides),
             memory: Arc::clone(&self.memory),
             layout: self.board.as_ref()?.layout.clone()?,
             params: self.params,
@@ -2104,7 +2157,8 @@ impl Engine {
             self.trace_layout();
         }
         let points: Vec<String> = path.iter().map(|p| format!("{:.0},{:.0},{}", p.x, p.y, p.t_ms)).collect();
-        self.trace(format!("G\t{first}\t{}\t{}\t{}", words.join(","), points.join(" "), self.history("").join(" ")));
+        let other = self.other_reading(&decoding, path);
+        self.trace(format!("G\t{first}\t{}\t{}\t{}\t{other}", words.join(","), points.join(" "), self.history("").join(" ")));
         if self.search_input(&first) {
             return;
         }
@@ -2114,6 +2168,17 @@ impl Engine {
         if let Some(word) = self.last_word.as_mut() {
             word.gesture = path.to_vec();
         }
+    }
+
+    /// What the reader that did not decide would have written, for the traces: the
+    /// owner compares the two on real typing before trusting either. Empty when
+    /// nothing would record it, which also saves running it.
+    fn other_reading(&self, decoding: &Decoding, path: &[Sample]) -> String {
+        if self.neural.is_none() || self.trace_key.is_none() || !self.field.allows_learning() {
+            return String::new();
+        }
+        let neural = if self.neural_decides { None } else { self.neural.clone() };
+        Decoding { neural, ..decoding.clone() }.rank(path).into_iter().next().unwrap_or_default()
     }
 
     /// Writes a chosen word with the right spacing and keeps it replaceable.
@@ -2317,6 +2382,10 @@ impl Default for Engine {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::indexing_slicing, clippy::panic)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use synthswipe::{Encoder, MODEL_HEAD_BYTES, split_model};
+
     use super::*;
 
     const TEXT_FIELD: Field = Field {
@@ -2394,19 +2463,27 @@ mod tests {
             self.apply(step)
         }
 
-        fn tap_at(&mut self, (x, y): (f32, f32)) {
+        fn tap_at(&mut self, (x, y): (f32, f32)) -> Step {
             self.t += 700;
             let t = self.t;
             self.send(Event::Down { pointer: 0, x, y, t });
-            self.send(Event::Up { pointer: 0, x, y, t: t + 40 });
+            self.send(Event::Up { pointer: 0, x, y, t: t + 40 })
         }
 
         fn tap(&mut self, label: &str) {
+            self.tap_step(label);
+        }
+
+        fn tap_step(&mut self, label: &str) -> Step {
             let point = self.center(label);
-            self.tap_at(point);
+            self.tap_at(point)
         }
 
         fn swipe(&mut self, word: &str) {
+            self.swipe_step(word);
+        }
+
+        fn swipe_step(&mut self, word: &str) -> Step {
             self.t += 700;
             let mut t = self.t;
             let points: Vec<(f32, f32)> = synthswipe::fold(word)
@@ -2428,7 +2505,7 @@ mod tests {
                 }
             }
             let (x, y) = *points.last().unwrap();
-            self.send(Event::Up { pointer: 0, x, y, t: t + 10 });
+            self.send(Event::Up { pointer: 0, x, y, t: t + 10 })
         }
     }
 
@@ -2468,14 +2545,69 @@ mod tests {
     }
 
     #[test]
-    fn backspace_after_a_swipe_removes_the_whole_word() {
+    fn backspace_after_a_swipe_removes_one_character() {
         let mut rig = Rig::new(TEXT_FIELD);
         rig.swipe("bonjour");
         rig.swipe("bonsoir");
         rig.tap("⌫");
-        assert_eq!(rig.text, "Bonjour ");
+        assert_eq!(rig.text, "Bonjour bonsoi");
         rig.tap("⌫");
+        assert_eq!(rig.text, "Bonjour bonso");
+    }
+
+    fn clear_word(rig: &mut Rig) {
+        while !rig.text.is_empty() {
+            rig.tap("⌫");
+        }
+    }
+
+    #[test]
+    fn a_new_gesture_replaces_what_backspace_left() {
+        let mut rig = Rig::new(TEXT_FIELD);
+        rig.swipe("ou");
+        rig.swipe("bonjour");
+        rig.tap("⌫");
+        rig.swipe("bonsoir");
+        assert_eq!(rig.text, "Ou bonsoir");
+    }
+
+    #[test]
+    fn a_letter_keeps_the_word_when_a_gesture_follows() {
+        let mut rig = Rig::new(TEXT_FIELD);
+        rig.swipe("bonjour");
+        rig.tap("⌫");
+        rig.tap("r");
+        rig.swipe("bonsoir");
+        assert_eq!(rig.text, "Bonjour bonsoir");
+    }
+
+    #[test]
+    fn a_letter_after_backspace_continues_the_swiped_word() {
+        let mut rig = Rig::new(TEXT_FIELD);
+        rig.swipe("bonjour");
+        rig.tap("⌫");
+        rig.tap("r");
         assert_eq!(rig.text, "Bonjour");
+        rig.tap_at(rig.space());
+        assert_eq!(rig.text, "Bonjour ");
+    }
+
+    #[test]
+    fn backspace_on_a_swiped_word_still_counts_as_a_failed_gesture() {
+        let (mut rig, secret) = traced_rig(TEXT_FIELD);
+        rig.swipe("bonjour");
+        let step = rig.tap_step("⌫");
+        let lines: Vec<String> = traces(&step).iter().map(|record| opened(&secret, record)).collect();
+        assert!(lines.iter().any(|line| line == "D"));
+    }
+
+    #[test]
+    fn a_word_with_a_letter_off_the_board_leaves_plain_text() {
+        let mut rig = Rig::new(TEXT_FIELD);
+        rig.swipe("bonjour");
+        assert!(rig.engine.typing_from("bon1").is_none());
+        assert_eq!(rig.engine.typing_from("bon").unwrap().taps.len(), 3);
+        assert!(rig.engine.typing_from("").is_none());
     }
 
     #[test]
@@ -2745,6 +2877,75 @@ mod tests {
         assert!(rig.engine.preview_job().is_none());
     }
 
+    #[derive(Debug)]
+    struct CountingEncoder(Arc<AtomicUsize>, bool);
+
+    impl Encoder for CountingEncoder {
+        fn encode(&self, _: &[f32], output: &mut [f32]) -> bool {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            output.fill(0.0);
+            self.1
+        }
+    }
+
+    fn with_network(rig: &mut Rig, works: bool) -> Arc<AtomicUsize> {
+        let mut file = b"SYNEURO1".to_vec();
+        file.resize(file.len() + MODEL_HEAD_BYTES, 0);
+        file.push(1);
+        let runs = Arc::new(AtomicUsize::new(0));
+        let (head, _) = split_model(&file).unwrap();
+        rig.engine.set_neural(Arc::new(Neural::new(head, Box::new(CountingEncoder(Arc::clone(&runs), works)))));
+        runs
+    }
+
+    #[test]
+    fn the_network_stays_out_until_it_is_turned_on() {
+        let mut rig = Rig::new(TEXT_FIELD);
+        let runs = with_network(&mut rig, true);
+        rig.swipe("bonjour");
+        assert_eq!(runs.load(Ordering::Relaxed), 0);
+        assert_eq!(rig.text.to_lowercase(), "bonjour");
+    }
+
+    #[test]
+    fn a_network_that_is_on_takes_part() {
+        let mut rig = Rig::new(TEXT_FIELD);
+        let runs = with_network(&mut rig, true);
+        rig.send(Event::Neural { deciding: true });
+        rig.swipe("bonjour");
+        assert_eq!(runs.load(Ordering::Relaxed), 1);
+        assert_ne!(rig.text, "");
+    }
+
+    #[test]
+    fn a_failing_network_leaves_the_geometry_in_charge() {
+        let mut rig = Rig::new(TEXT_FIELD);
+        let runs = with_network(&mut rig, false);
+        rig.send(Event::Neural { deciding: true });
+        rig.swipe("bonjour");
+        assert_eq!(runs.load(Ordering::Relaxed), 1);
+        assert_eq!(rig.text.to_lowercase(), "bonjour");
+    }
+
+    #[test]
+    fn the_trace_records_what_the_other_reader_would_write() {
+        let (mut rig, secret) = traced_rig(TEXT_FIELD);
+        let runs = with_network(&mut rig, false);
+        let step = rig.swipe_step("bonjour");
+        let lines: Vec<String> = traces(&step).iter().map(|record| opened(&secret, record)).collect();
+        let gesture = lines.iter().find(|line| line.starts_with("G\t")).unwrap();
+        assert_eq!(gesture.rsplit('\t').next(), Some("bonjour"));
+        assert_eq!(runs.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn a_field_that_forbids_learning_never_runs_the_other_reader() {
+        let (mut rig, _) = traced_rig(Field { ime_options: android::NO_PERSONALIZED_LEARNING, ..TEXT_FIELD });
+        let runs = with_network(&mut rig, true);
+        rig.swipe("bonjour");
+        assert_eq!(runs.load(Ordering::Relaxed), 0);
+    }
+
     fn traces(step: &Step) -> Vec<&str> {
         step.commands
             .iter()
@@ -2889,7 +3090,7 @@ mod tests {
     fn the_word_typed_after_deleting_a_swipe_owns_that_gesture() {
         let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
         rig.swipe("bonjour");
-        rig.tap("⌫");
+        clear_word(&mut rig);
         assert_eq!(rig.text, "");
         type_word(&mut rig, "bxzr");
         rig.tap_at(rig.space());
@@ -2905,7 +3106,7 @@ mod tests {
         let (secret, public) = synthboard_seal::generate_keys().unwrap();
         rig.engine.set_trace_key(public);
         rig.swipe("bonjour");
-        rig.tap("⌫");
+        clear_word(&mut rig);
         type_word(&mut rig, "bxzr");
         let (x, y) = rig.space();
         let t = rig.t + 700;
@@ -3386,7 +3587,6 @@ mod tests {
         rig.swipe("ou");
         let first = rig.text.clone();
         rig.tap("⌫");
-        assert_eq!(rig.text, "");
         rig.swipe("ou");
         assert_ne!(rig.text, first);
         assert_ne!(rig.text, "");

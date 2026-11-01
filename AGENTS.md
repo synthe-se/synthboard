@@ -18,7 +18,7 @@ Synthboard is a privacy-first, offline Android swipe keyboard with a reusable op
 - Latest stable dependencies, each one justified. New external data or code is logged in `PROVENANCE.md`.
 - Low memory and optimised logic: flat storage, no allocation in hot paths, no linear scan where an index fits. Measure on the device.
 - It must never crash. No `unwrap`, no indexing, no panics in production paths; the FFI layer still guards every call. Loaders accept any bytes.
-- `unsafe` lives in `crates/synthboard-ffi/src/jni.rs` and `wipe.rs` and nowhere else. Types that cross to Kotlin are declared with `wire_struct!` or `wire_enum!`, and the Kotlin is generated from them at build time.
+- `unsafe` lives in `crates/synthboard-ffi/src/jni.rs` and `wipe.rs` and nowhere else. ONNX Runtime, static C++ reached through `synthswipe-onnx`, is the one exception to safe native code: it reads only our signed model, and its blocks are wiped through `--wrap=free`. Types that cross to Kotlin are declared with `wire_struct!` or `wire_enum!`, and the Kotlin is generated from them at build time.
 - Layouts and languages are data. AZERTY is the owner's layout, never a hard-wired assumption; QWERTY users are first-class. French and English stay active together and the language lean only tilts ranking.
 - Research a domain before building it. Finish features against a behaviour inventory; do not present a stage as an endpoint.
 - Keyboard product, library and weights from FUTO stay out of options, comparisons and dependencies. Its public swipe datasets are welcome.
@@ -32,7 +32,7 @@ The model is GrapheneOS: private by default and defence in depth.
 - The keyboard never reads the clipboard. Selection, copy and paste belong to the system's own menu.
 - Password managers appear through Android's inline suggestions: surfaces the keyboard hosts and cannot read.
 - Typed text leaves the engine only as commits to the field and as words for the shell to draw. Traces are sealed with the public key before they leave the engine, and plain text never reaches the Android side.
-- Memory is encrypted at rest with a key that needs an unlocked phone, and leaves RAM whenever the keyboard hides. Native memory is zeroed as it is freed, by the allocator in `wipe.rs`.
+- Memory is encrypted at rest with a key that needs an unlocked phone, and leaves RAM whenever the keyboard hides. Native memory is zeroed as it is freed, by `wipe.rs`, whether Rust or ONNX Runtime allocated it.
 - Personal data and signing keys live on the encrypted volume only (`tools/vault.sh`), reached through the ignored `data/raw/personal`. Secret keys and plain traces never enter Git, logs or a chat. Never print or pass a recovery phrase.
 - `docs/security.md` is the threat model. A change to what is stored, read or signed updates it.
 - The release stays non-debuggable, without backups, signed by `tools/sign-release.sh`, and passes `tools/check-release.sh`.

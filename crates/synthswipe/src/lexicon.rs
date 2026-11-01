@@ -199,7 +199,7 @@ impl Lexicon {
             lexicon.languages.push(languages);
         }
         lexicon.alphabet = alphabet;
-        lexicon.nodes = build_trie(&lexicon);
+        lexicon.nodes = breadth_first(&build_trie(&lexicon));
         lexicon.surfaces.shrink_to_fit();
         lexicon.letters.shrink_to_fit();
         lexicon
@@ -269,6 +269,26 @@ impl Lexicon {
         std::iter::successors(self.node(parent.first_child), |node| {
             self.node(node.next_sibling)
         })
+    }
+
+    /// The children of a node as `(node, letter)`, for a walk that keeps nodes by number.
+    pub(crate) fn child_ids(&self, parent: u32) -> impl Iterator<Item = (u32, u16)> + '_ {
+        let first = self.nodes.get(parent as usize).map_or(NO_NODE, |node| node.first_child);
+        std::iter::successors(self.node(first).map(|node| (first, node)), |(_, node)| {
+            self.node(node.next_sibling).map(|next| (node.next_sibling, next))
+        })
+        .map(|(index, node)| (index, node.letter))
+    }
+
+    /// The words ending at a node given by number.
+    pub(crate) fn entries_at(&self, node: u32) -> impl Iterator<Item = Entry<'_>> {
+        self.nodes.get(node as usize).into_iter().flat_map(|node| self.entries_of(node))
+    }
+
+    /// The weight of a word, or 0 if it is unknown.
+    #[must_use]
+    pub fn weight(&self, word: &str) -> f32 {
+        self.find(word).map_or(0.0, |entry| entry.weight)
     }
 
     fn node(&self, index: u32) -> Option<&Node> {
@@ -384,6 +404,29 @@ struct TapStep<'a> {
     next_tap: usize,
     spent: f32,
     extra: u8,
+}
+
+/// Renumbers a trie so that the children of a node sit side by side. Walking them
+/// is the hot loop of every search, and scattered children mean a cache miss each.
+fn breadth_first(nodes: &[Node]) -> Vec<Node> {
+    let mut sorted = Vec::with_capacity(nodes.len());
+    sorted.extend(nodes.first().copied());
+    let mut at = 0;
+    while let Some(parent) = sorted.get(at).copied() {
+        let first = u32::try_from(sorted.len()).unwrap_or(u32::MAX);
+        let mut child = parent.first_child;
+        let mut count = 0;
+        while let Some(node) = (child != NO_NODE).then(|| nodes.get(child as usize).copied()).flatten() {
+            child = node.next_sibling;
+            count += 1;
+            sorted.push(Node { next_sibling: if child == NO_NODE { NO_NODE } else { first + count }, ..node });
+        }
+        if let Some(moved) = sorted.get_mut(at) {
+            moved.first_child = if count == 0 { NO_NODE } else { first };
+        }
+        at += 1;
+    }
+    sorted
 }
 
 fn build_trie(lexicon: &Lexicon) -> Vec<Node> {
@@ -528,6 +571,18 @@ mod tests {
     #[test]
     fn words_without_any_key_are_skipped() {
         assert!(Lexicon::new([("'-", 1.0)]).is_empty());
+    }
+
+    #[test]
+    fn the_children_of_a_node_sit_side_by_side() {
+        let lexicon = Lexicon::new([("bonjour", 1.0), ("bol", 1.0), ("car", 1.0), ("cat", 1.0), ("dur", 1.0), ("zoo", 1.0)]);
+        for (index, node) in lexicon.nodes.iter().enumerate() {
+            let ids: Vec<u32> = lexicon.child_ids(u32::try_from(index).unwrap_or(0)).map(|(id, _)| id).collect();
+            assert!(ids.iter().zip(ids.iter().skip(1)).all(|(a, b)| *b == a + 1), "{node:?}");
+        }
+        for word in ["bonjour", "bol", "car", "cat", "dur", "zoo"] {
+            assert!(lexicon.contains(word), "{word}");
+        }
     }
 
     #[test]

@@ -30,6 +30,7 @@ wire_enum! {
         LoadLanguage { affinities: Vec<u8>, forms: Vec<u8>, next_words: Vec<u8> },
         LoadEmoji { bytes: Vec<u8> },
         LoadLexicon { bytes: Vec<u8> },
+        LoadNeural { bytes: Vec<u8> },
         NewMemoryKeys,
         SetMemoryKey { key: Vec<u8> },
         LoadMemory { sealed: Option<Vec<u8>>, secret: Vec<u8> },
@@ -135,6 +136,10 @@ impl Keyboard {
                 self.load_lexicon(&bytes);
                 Reply::Done
             }
+            Call::LoadNeural { bytes } => {
+                self.load_neural(&bytes);
+                Reply::Done
+            }
             Call::NewMemoryKeys => Reply::Bytes { bytes: new_memory_keys() },
             Call::SetMemoryKey { key } => {
                 self.set_memory_key(key);
@@ -234,6 +239,21 @@ impl Keyboard {
         };
         self.lock().set_catalog(Arc::clone(&catalog));
         catalog.groups.clone()
+    }
+
+    /// Gives the model to the engine. A file that does not load leaves the geometry
+    /// alone in charge. A build without the runtime ignores it.
+    #[cfg_attr(not(feature = "onnx"), allow(clippy::unused_self))]
+    fn load_neural(&self, bytes: &[u8]) {
+        #[cfg(feature = "onnx")]
+        {
+            let (neural, panicked) = guarded(|| synthswipe_onnx::load(bytes).map(Arc::new));
+            if let (Some(neural), false) = (neural, panicked) {
+                self.lock().set_neural(neural);
+            }
+        }
+        #[cfg(not(feature = "onnx"))]
+        let _ = bytes;
     }
 
     /// Parses `word,weight` lines and gives the lexicon to the engine.

@@ -35,6 +35,7 @@ object Settings {
     const val RECENTS = "recents"
     const val FILE = "emoji"
     const val SCREENSHOTS = "screenshots"
+    const val NEURAL = "neural"
     const val MEMORY_FILE = "memory.sealed"
     const val MEMORY_SECRET_FILE = "memory.key"
     const val MEMORY_PUBLIC_FILE = "memory.pub"
@@ -162,6 +163,7 @@ class SettingsActivity : Activity() {
             list.addView(tryOut())
             toggle(R.string.record_traces, Settings.TRACES)
             toggle(R.string.screenshots, Settings.SCREENSHOTS, false)
+            toggle(R.string.neural, Settings.NEURAL, false)
             val traces = File(filesDir, TraceProvider.FILE)
             if (traces.length() >= TraceProvider.MAX_BYTES) {
                 list.addView(TextView(this).apply { setText(R.string.traces_full) })

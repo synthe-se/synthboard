@@ -64,9 +64,16 @@ val nativeLibrary = tasks.register<Exec>("nativeLibrary") {
     // Page size for current phones, and no path of this machine in the library.
     environment(
         "RUSTFLAGS",
-        "-Clink-arg=-Wl,-z,max-page-size=16384 --remap-path-prefix=${System.getProperty("user.home")}=~",
+        "-Clink-arg=-Wl,-z,max-page-size=16384 -Clink-arg=-lc++abi -Clink-arg=-Wl,--wrap=free " +
+            "--remap-path-prefix=${System.getProperty("user.home")}=~",
     )
-    commandLine("cargo", "build", "--release", "--target", "aarch64-linux-android", "-p", "synthboard-ffi", "--lib")
+    // ONNX Runtime, static and built by `tools/build-ort.sh`.
+    environment("ORT_LIB_PATH", repository.resolve("data/raw/ort/android").path)
+    environment("ORT_CXX_STDLIB", "c++_static")
+    commandLine(
+        "cargo", "build", "--release", "--target", "aarch64-linux-android",
+        "-p", "synthboard-ffi", "--lib", "--features", "onnx",
+    )
     outputs.upToDateWhen { false }
 }
 

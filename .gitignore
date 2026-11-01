@@ -17,6 +17,7 @@ android/app/src/main/assets/emoji.tsv
 android/app/src/main/assets/affinity.bin
 android/app/src/main/assets/next.tsv
 android/app/src/main/assets/forms.tsv
+android/app/src/main/assets/neural.bin
 research_notes/
 reports/
 docs/baselines.md

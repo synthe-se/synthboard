@@ -67,6 +67,8 @@ class SynthboardService : InputMethodService() {
             Settings.traceKey(this)?.let(keyboard::setTraceKey)
             keyboard.loadLexicon(readAsset("lexicon.csv"))
             keyboard.loadLanguage(readAsset("affinity.bin"), readAsset("forms.tsv"), readAsset("next.tsv"))
+            // Optional: without the model the geometry answers alone.
+            runCatching { readAsset("neural.bin") }.onSuccess(keyboard::loadNeural)
             handler.post { send(Event.LanguageReady) }
         }
     }
@@ -161,6 +163,7 @@ class SynthboardService : InputMethodService() {
         send(Event.HeightScale(saved.getInt(Settings.HEIGHT, Settings.FULL_HEIGHT) / Settings.FULL_HEIGHT.toFloat()))
         send(Event.Alphabet(saved.getBoolean(Settings.QWERTY, false)))
         send(Event.Screenshots(saved.getBoolean(Settings.SCREENSHOTS, false)))
+        send(Event.Neural(saved.getBoolean(Settings.NEURAL, false)))
     }
 
     private fun writeFile(target: File, bytes: ByteArray) {
