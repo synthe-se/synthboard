@@ -117,6 +117,9 @@ const BLANK_SAMPLE: Sample = Sample { x: 0.0, y: 0.0, t_ms: 0 };
 const MIRROR_BYTES: usize = 4096;
 /// How close a new gesture must be to a deleted one to be a second try, in key pitches.
 const RETRY_REACH: f32 = 0.6;
+/// Deleted tries of one gesture before it reads as it always does: past two, each
+/// new word would be worse than the ones already refused.
+const RETRY_TRIES: usize = 2;
 /// Corrections kept for the session. A correction stands for the same gesture at
 /// once, even drawn too loosely to match its trace: the owner corrected one word
 /// three times in a row without it coming first.
@@ -387,6 +390,12 @@ enum Held {
 struct Retry {
     words: Vec<String>,
     gesture: Vec<[f32; 2]>,
+}
+
+impl Retry {
+    fn covers(&self, shape: &[[f32; 2]]) -> bool {
+        signature_distance(&self.gesture, shape) <= RETRY_REACH
+    }
 }
 
 /// A word waiting to be kept: it counts once the next one begins.
@@ -720,19 +729,18 @@ impl Decoding {
     #[must_use]
     pub fn rank(&self, path: &[Sample]) -> Vec<String> {
         let extra = self.memory.extra_words();
-        let wanted = SUGGESTIONS + self.retry.as_ref().map_or(0, |retry| retry.words.len());
         let reading = self.neural.as_ref().and_then(|neural| neural.read(&self.layout, path));
-        let pool = if reading.is_some() { wanted.max(POOL) } else { wanted };
+        let pool = if reading.is_some() { SUGGESTIONS.max(POOL) } else { SUGGESTIONS };
         let params = if reading.is_some() { lean(&self.params) } else { self.params };
         let found = self.geometry(&self.lexicon, path, &params, pool);
         let mix = Mix::shipped(&found);
         let mut ranked = self.blended(&self.lexicon, found, reading.as_ref(), &params, mix);
-        ranked.truncate(wanted);
+        ranked.truncate(SUGGESTIONS);
         if let Some(extra) = &extra {
             let found = self.geometry(extra, path, &params, pool);
             ranked.extend(self.blended(extra, found, reading.as_ref(), &params, mix));
             ranked.sort_by(best_first);
-            ranked.truncate(wanted);
+            ranked.truncate(SUGGESTIONS);
         }
         let mut words: Vec<String> = ranked.iter().map(|candidate| candidate.surface.to_owned()).collect();
         // A personal trace is a light vote: a close one takes the lead, and
@@ -748,12 +756,27 @@ impl Decoding {
             let surface = self.surface_of(&mut words, word);
             words.insert(0, surface);
         }
-        // A second try at a deleted gesture must not give the same word again.
-        if let Some(retry) = self.retry.as_ref().filter(|r| signature_distance(&r.gesture, &gesture) <= RETRY_REACH) {
-            words.sort_by_key(|word| retry.words.contains(&word.to_lowercase()));
+        if let Some(retry) = self.retry.as_ref().filter(|retry| retry.covers(&gesture)) {
+            self.retried(&mut words, &retry.words);
         }
         words.truncate(SUGGESTIONS);
         words
+    }
+
+    /// A second try at a deleted gesture writes another word and keeps the deleted
+    /// one first among the alternatives: the user may only have changed their mind.
+    /// Once the tries or the other words run out, the ranking stands.
+    fn retried(&self, words: &mut Vec<String>, deleted: &[String]) {
+        let other = words.iter().position(|word| !deleted.contains(&word.to_lowercase()));
+        let Some(other) = other.filter(|_| deleted.len() < RETRY_TRIES) else {
+            return;
+        };
+        let other = words.remove(other);
+        for word in deleted.iter().filter(|word| !self.memory.is_blocked(word)) {
+            let surface = self.surface_of(words, word);
+            words.insert(0, surface);
+        }
+        words.insert(0, other);
     }
 
     /// The word this gesture would give so far, in the case it would be written.
@@ -1424,10 +1447,17 @@ impl Engine {
             return;
         }
         let shape = signature(gesture, pitch);
-        match self.retry.as_mut().filter(|known| signature_distance(&known.gesture, &shape) <= RETRY_REACH) {
-            Some(known) => known.words.push(word.to_lowercase()),
+        match self.retry.as_mut().filter(|known| known.covers(&shape)) {
+            Some(known) if known.words.len() < RETRY_TRIES => known.words.push(word.to_lowercase()),
+            Some(_) => {}
             None => self.retry = Some(Retry { words: vec![word.to_lowercase()], gesture: shape }),
         }
+    }
+
+    /// The retry this gesture carries on, which writing its word must not end.
+    fn take_retry_of(&mut self, path: &[Sample]) -> Option<Retry> {
+        let shape = signature(path, self.layout()?.pitch());
+        self.retry.take().filter(|retry| retry.covers(&shape))
     }
 
     fn update_leaning(&mut self, word: &str) {
@@ -1438,6 +1468,9 @@ impl Engine {
     /// Queues a finished word for learning, and learns the one before it.
     fn remember(&mut self, previous: String, history: Vec<String>, written: &str) {
         self.confirm_pending();
+        // Any word but another try at the gesture moves on from it, even where
+        // nothing is kept: a word deleted on a change of mind must not stay punished.
+        self.retry = None;
         let failed_gesture = self.failed_gesture.take();
         let imposed = self.capitals_are_imposed(written);
         self.word_shift = Shift::Off;
@@ -1746,6 +1779,10 @@ impl Engine {
                 self.finish_typing();
             }
             self.confirm_pending();
+            // A field that keeps nothing has no waiting word to end the retry.
+            if self.last_word.is_some() {
+                self.retry = None;
+            }
         }
         self.deadline = None;
         self.press(-1);
@@ -2589,7 +2626,9 @@ impl Engine {
         self.trace(format!("G\t{first}\t{}\t{}\t{}\t{other}\t{reader}", words.join(","), points.join(" "), self.history("").join(" ")));
         let cased = self.apply_case(&first);
         let alternatives: Vec<String> = words.iter().skip(1).map(|word| case_like(&self.memory.form(word), &cased)).collect();
+        let another_try = self.take_retry_of(path);
         self.commit_word(cased, alternatives);
+        self.retry = another_try;
         if let Some(word) = self.last_word.as_mut() {
             word.gesture = path.to_vec();
         }
@@ -3362,15 +3401,7 @@ mod tests {
 
     #[test]
     fn a_word_is_compared_whole() {
-        let learned = Learned {
-            previous: String::new(),
-            history: Vec::new(),
-            word: "été".to_owned(),
-            lifted_block: false,
-            wrote_form: false,
-            earlier_form: None,
-            taught: Vec::new(),
-        };
+        let learned = learned("été");
         assert!(!holds_words(&tokens("un étéphone"), std::slice::from_ref(&learned)));
         assert!(holds_words(&tokens("un été, encore"), std::slice::from_ref(&learned)));
     }
@@ -5815,5 +5846,157 @@ mod tests {
         let [left, center, right] = SLOT_CENTERS;
         assert_eq!(rig.engine.slot_at(rig.engine.width * (left + center) / 2.0), CENTER_SLOT);
         assert_eq!(rig.engine.slot_at(rig.engine.width * (center + right) / 2.0), RIGHT_SLOT);
+    }
+
+    const CENTER_OF_BAR: (f32, f32) = (540.0, 10.0);
+    const NO_LEARNING: Field = Field { input_type: android::CLASS_TEXT, ime_options: android::NO_PERSONALIZED_LEARNING };
+
+    fn the_alternatives(rig: &Rig) -> Vec<String> {
+        rig.engine.last_word.as_ref().unwrap().alternatives.clone()
+    }
+
+    fn its_gesture(rig: &Rig) -> Vec<Sample> {
+        rig.engine.last_word.as_ref().unwrap().gesture.clone()
+    }
+
+    #[test]
+    fn a_second_try_keeps_the_deleted_word_one_tap_away() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        rig.tap("⌫");
+        rig.swipe("ou");
+        assert_eq!(rig.text, "où");
+        assert_eq!(the_alternatives(&rig).first().map(String::as_str), Some("ou"));
+        rig.tap_at(CENTER_OF_BAR);
+        assert_eq!(rig.text, "ou");
+    }
+
+    #[test]
+    fn a_deleted_word_the_second_reading_lost_is_still_offered() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let gesture = its_gesture(&rig);
+        let shape = signature(&gesture, rig.engine.layout().unwrap().pitch());
+        rig.engine.retry = Some(Retry { words: vec!["bonsoir".to_owned()], gesture: shape });
+        let words = rig.engine.snapshot().unwrap().rank(&gesture);
+        assert_eq!(words.get(1).map(String::as_str), Some("bonsoir"), "{words:?}");
+        assert_eq!(words.first().map(String::as_str), Some("ou"));
+    }
+
+    #[test]
+    fn a_deleted_word_since_forgotten_is_not_offered_again() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let gesture = its_gesture(&rig);
+        rig.tap("⌫");
+        rig.engine.forget("ou");
+        let words = rig.engine.snapshot().unwrap().rank(&gesture);
+        assert!(!words.iter().any(|word| word == "ou"), "{words:?}");
+    }
+
+    #[test]
+    fn two_deleted_tries_bring_the_first_reading_back_for_good() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let gesture = its_gesture(&rig);
+        let natural = rig.engine.snapshot().unwrap().rank(&gesture);
+        clear_word(&mut rig);
+        rig.swipe("ou");
+        assert_eq!(rig.text, "où");
+        clear_word(&mut rig);
+        assert_eq!(rig.engine.snapshot().unwrap().rank(&gesture), natural);
+        for _ in 0..3 {
+            rig.swipe("ou");
+            assert_eq!(rig.text, "ou");
+            clear_word(&mut rig);
+        }
+        assert_eq!(rig.engine.retry.as_ref().map(|retry| retry.words.len()), Some(RETRY_TRIES));
+    }
+
+    #[test]
+    fn a_third_candidate_is_not_reached_once_the_tries_run_out() {
+        let mut rig = plain_rig();
+        rig.engine.set_lexicon(Arc::new(Lexicon::new([("ou", 180.0), ("où", 170.0), ("oû", 160.0)])));
+        rig.swipe("ou");
+        let gesture = its_gesture(&rig);
+        let natural = rig.engine.snapshot().unwrap().rank(&gesture);
+        assert_eq!(natural.len(), 3);
+        clear_word(&mut rig);
+        rig.swipe("ou");
+        clear_word(&mut rig);
+        assert_eq!(rig.engine.snapshot().unwrap().rank(&gesture), natural);
+    }
+
+    #[test]
+    fn a_gesture_with_one_candidate_comes_back_to_it() {
+        let mut rig = plain_rig();
+        rig.engine.set_lexicon(Arc::new(Lexicon::new([("bonjour", 150.0)])));
+        rig.swipe("bonjour");
+        clear_word(&mut rig);
+        rig.swipe("bonjour");
+        assert_eq!(rig.text, "bonjour");
+    }
+
+    #[test]
+    fn a_second_try_changes_the_order_of_the_ranking_and_nothing_else() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let gesture = its_gesture(&rig);
+        let mut natural = rig.engine.snapshot().unwrap().rank(&gesture);
+        clear_word(&mut rig);
+        let mut retried = rig.engine.snapshot().unwrap().rank(&gesture);
+        natural.sort();
+        retried.sort();
+        assert_eq!(natural, retried);
+    }
+
+    #[test]
+    fn once_a_retry_ends_the_same_gesture_reads_the_same() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let gesture = its_gesture(&rig);
+        let natural = rig.engine.snapshot().unwrap().rank(&gesture);
+        clear_word(&mut rig);
+        rig.send(Event::Selection { start: 9, end: 9 });
+        assert_eq!(rig.engine.snapshot().unwrap().rank(&gesture), natural);
+    }
+
+    #[test]
+    fn a_word_written_after_a_change_of_mind_ends_the_retry_at_once() {
+        for field in [TEXT_FIELD, NO_LEARNING] {
+            let mut rig = Rig::new(field);
+            rig.swipe("ou");
+            clear_word(&mut rig);
+            assert!(rig.engine.retry.is_some());
+            rig.swipe("bonjour");
+            assert!(rig.engine.retry.is_none());
+            rig.tap_at(rig.space());
+            rig.swipe("ou");
+            assert!(rig.text.ends_with(" ou"), "{}", rig.text);
+        }
+    }
+
+    #[test]
+    fn a_tapped_word_ends_the_retry_even_where_nothing_is_kept() {
+        let mut rig = Rig::new(NO_LEARNING);
+        rig.swipe("ou");
+        clear_word(&mut rig);
+        type_word(&mut rig, "bonjour");
+        rig.tap_at(rig.space());
+        assert!(rig.engine.retry.is_none());
+        rig.swipe("ou");
+        assert_eq!(rig.text, "bonjour ou");
+    }
+
+    #[test]
+    fn a_word_kept_where_nothing_is_kept_ends_the_retry() {
+        let mut rig = Rig::new(NO_LEARNING);
+        rig.swipe("ou");
+        rig.tap("⌫");
+        rig.swipe("ou");
+        assert_eq!(rig.text, "où");
+        assert!(rig.engine.retry.is_some(), "another try keeps it going");
+        rig.swipe("ou");
+        assert_eq!(rig.text, "où ou");
     }
 }
