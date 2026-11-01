@@ -3081,9 +3081,8 @@ mod tests {
         assert_eq!(rig.engine.memory.next_after("bonjour"), ["bonsoir"]);
     }
 
-    #[test]
-    fn words_end_a_text_whatever_the_marks_around_them() {
-        let learned = |word: &str| Learned {
+    fn learned(word: &str) -> Learned {
+        Learned {
             previous: String::new(),
             history: Vec::new(),
             word: word.to_owned(),
@@ -3091,7 +3090,11 @@ mod tests {
             wrote_form: false,
             earlier_form: None,
             taught: Vec::new(),
-        };
+        }
+    }
+
+    #[test]
+    fn words_end_a_text_whatever_the_marks_around_them() {
         assert!(holds_words(&tokens("dit bonjour, "), &[learned("bonjour")]));
         assert!(holds_words(&tokens("c'est l'été"), &[learned("c'est"), learned("l'"), learned("été")]));
         assert!(!holds_words(&tokens("dit bonjou"), &[learned("bonjour")]));
@@ -5521,5 +5524,206 @@ mod tests {
         assert_eq!(before, "👍🏽");
         assert!(step.commands.contains(&Command::DeleteBefore { units: 4 }));
         assert_eq!(rig.engine.before, "");
+    }
+
+    #[test]
+    fn a_wiped_word_keeps_nothing() {
+        let mut entry = Learned {
+            previous: "avant".to_owned(),
+            history: vec!["avant".to_owned()],
+            earlier_form: Some("Mot".to_owned()),
+            taught: vec![vec![[1.0, 2.0]]],
+            ..learned("mot")
+        };
+        entry.wipe();
+        assert_eq!((entry.previous.as_str(), entry.word.as_str()), ("", ""));
+        assert_eq!(entry.history, Vec::<String>::new());
+        assert_eq!(entry.earlier_form, None);
+        assert_eq!(entry.taught, [[[0.0; 2]]]);
+    }
+
+    #[test]
+    fn forgetting_a_word_leaves_the_others_whole() {
+        let mut rig = plain_rig();
+        let (gone, kept) = (vec![[1.0, 1.0]], vec![[2.0, 2.0]]);
+        rig.engine.fresh = vec![("mot".to_owned(), gone), ("autre".to_owned(), kept.clone())];
+        rig.engine.learned = vec![learned("mot"), Learned { taught: vec![kept.clone()], ..learned("autre") }];
+        rig.engine.forget("Mot");
+        assert_eq!(rig.engine.fresh, [("autre".to_owned(), kept.clone())]);
+        assert_eq!(rig.engine.learned.len(), 1);
+        assert_eq!(rig.engine.learned[0].word, "autre");
+        assert_eq!(rig.engine.learned[0].taught, [kept]);
+    }
+
+    #[test]
+    fn a_word_never_blocked_is_not_blocked_by_taking_it_back() {
+        let mut rig = plain_rig();
+        rig.engine.remember("voir".to_owned(), Vec::new(), "zxcv");
+        rig.engine.confirm_pending();
+        let erased = rig.engine.learned.split_off(0);
+        rig.engine.take_back(erased);
+        assert!(!rig.engine.memory.is_blocked("zxcv"));
+    }
+
+    #[test]
+    fn a_pick_from_the_bar_can_be_taken_back_with_its_word() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        rig.tap_at((540.0, 10.0));
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.learned.last().map(|learned| learned.taught.len()), Some(1));
+    }
+
+    #[test]
+    fn a_tap_or_a_field_that_forbids_learning_teaches_no_gesture() {
+        let tap = [Sample { x: 0.0, y: 0.0, t_ms: 0 }];
+        let stroke = [Sample { x: 0.0, y: 0.0, t_ms: 0 }, Sample { x: 90.0, y: 0.0, t_ms: 10 }];
+        let mut rig = plain_rig();
+        assert_eq!(rig.engine.teach("mot", &tap), None);
+        assert!(rig.engine.teach("mot", &stroke).is_some());
+        let mut private = Rig::new(Field { input_type: android::CLASS_TEXT, ime_options: android::NO_PERSONALIZED_LEARNING });
+        assert_eq!(private.engine.teach("mot", &stroke), None);
+    }
+
+    #[test]
+    fn taking_a_trace_back_keeps_other_words_and_other_shapes() {
+        let mut rig = plain_rig();
+        let (first, second) = (vec![[1.0, 1.0]], vec![[2.0, 2.0]]);
+        let word = |word: &str, shape: &Vec<[f32; 2]>| (word.to_owned(), shape.clone());
+        rig.engine.fresh = vec![word("mot", &first), word("mot", &second), word("autre", &first)];
+        rig.engine.take_back_traces("mot", [first.as_slice()]);
+        assert_eq!(rig.engine.fresh, [word("mot", &second), word("autre", &first)]);
+    }
+
+    #[test]
+    fn the_words_habit_and_familiarity_both_raise_it() {
+        let mut rig = plain_rig();
+        let memory = Arc::make_mut(&mut rig.engine.memory);
+        memory.learn("voir", "bonjour", |_| true);
+        memory.learn("autre", "bonjour", |_| true);
+        let decoding = rig.engine.snapshot().unwrap();
+        let score = |previous: &str| decoding.score(previous, &[], &[], "bonjour");
+        let (familiarity, habit) = (FAMILIAR_WEIGHT * 3.0_f32.ln(), HABIT_WEIGHT * 2.0_f32.ln());
+        assert!((score("voir") - familiarity - habit).abs() < 1e-5);
+        assert!((score("rien") - familiarity).abs() < 1e-5);
+    }
+
+    #[test]
+    fn one_loose_trace_takes_second_place_and_a_second_one_leads() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let gesture = rig.engine.last_word.as_ref().unwrap().gesture.clone();
+        let pitch = rig.engine.layout().unwrap().pitch();
+        let loose: Vec<[f32; 2]> = signature(&gesture, pitch).iter().map(|&[x, y]| [x + 0.3, y]).collect();
+        Arc::make_mut(&mut rig.engine.memory).add_trace("merge", loose.clone());
+        let words = rig.engine.snapshot().unwrap().rank(&gesture);
+        assert_eq!(words.iter().position(|word| word == "merge"), Some(1), "{words:?}");
+        Arc::make_mut(&mut rig.engine.memory).add_trace("merge", loose);
+        let words = rig.engine.snapshot().unwrap().rank(&gesture);
+        assert_eq!(words.first().map(String::as_str), Some("merge"), "{words:?}");
+    }
+
+    #[test]
+    fn a_gesture_keeps_one_word_more_than_the_bar_shows() {
+        let mut rig = wide_rig(&[("ou", 180.0), ("où", 170.0), ("oi", 160.0), ("oy", 150.0), ("oui", 140.0), ("ouy", 130.0)]);
+        rig.swipe("ou");
+        let gesture = rig.engine.last_word.as_ref().unwrap().gesture.clone();
+        assert_eq!(rig.engine.snapshot().unwrap().rank(&gesture).len(), BAR_SLOTS + 1);
+    }
+
+    #[test]
+    fn the_last_word_of_a_long_text_is_read_from_its_tail() {
+        let rig = plain_rig();
+        assert_eq!(rig.engine.last_token(&"a".repeat(2 * CONTEXT_CHARS)).len(), CONTEXT_CHARS);
+    }
+
+    #[test]
+    fn only_a_phantom_space_after_the_whole_mirror_is_owed() {
+        let mut rig = rig_with_text("Fin.");
+        assert!(!rig.engine.owes_space("Fin."));
+        assert_eq!(rig.engine.previous_token(), "fin");
+        rig.engine.spacing = Spacing::Phantom;
+        assert!(rig.engine.owes_space("Fin."));
+        assert!(!rig.engine.owes_space("Fi."));
+        assert_eq!(rig.engine.previous_token(), SENTENCE_START);
+    }
+
+    #[test]
+    fn the_token_before_a_word_is_the_one_ahead_of_it() {
+        let rig = rig_with_text("je suis");
+        assert_eq!(rig.engine.token_before("suis"), "je");
+    }
+
+    #[test]
+    fn a_one_shot_capital_outlives_a_refresh() {
+        let mut rig = rig_with_text("mot ");
+        rig.engine.shift = Shift::OneShot;
+        rig.engine.refresh_shift();
+        assert_eq!(rig.engine.shift, Shift::OneShot);
+    }
+
+    #[test]
+    fn a_shift_turned_off_stays_off_for_the_next_gesture() {
+        let mut rig = Rig::new(TEXT_FIELD);
+        rig.engine.shift = Shift::Off;
+        assert_eq!(rig.engine.snapshot().unwrap().shift, Shift::Off);
+    }
+
+    #[test]
+    fn context_moves_a_correction_by_its_weight_and_no_more() {
+        let first_offered = |weight: f32| {
+            let mut rig = plain_rig();
+            rig.engine.set_lexicon(Arc::new(Lexicon::new([("ou", 200.0), ("où", weight)])));
+            Arc::make_mut(&mut rig.engine.memory).learn("voir", "où", |_| true);
+            type_word(&mut rig, "ou");
+            let typing = rig.engine.typing.clone().unwrap();
+            rig.engine.corrections(&typing).first().map(|found| found.0.clone()).unwrap()
+        };
+        assert_eq!(first_offered(100.0), "ou");
+        assert_eq!(first_offered(190.0), "où");
+    }
+
+    #[test]
+    fn a_delete_drag_lifted_before_it_selected_deletes_nothing() {
+        let mut rig = rig_with_text("une deux");
+        let (x, y) = rig.center("⌫");
+        let far = x - DELETE_SWIPE_DP * DENSITY - 1.0;
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        rig.send(Event::Move { pointer: 0, x: far, y, t: t + 10 });
+        let step = rig.send(Event::Up { pointer: 0, x: far, y, t: t + 20 });
+        assert!(!step.commands.contains(&Command::DeleteSelection), "{:?}", step.commands);
+    }
+
+    #[test]
+    fn a_cursor_moved_away_settles_words_already_learned() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        rig.swipe("bonsoir");
+        rig.engine.confirm_pending();
+        assert!(rig.engine.pending.is_none());
+        rig.send(Event::Selection { start: 3, end: 3 });
+        assert!(rig.engine.unsettled);
+        rig.send(Event::Context { before: "bon".to_owned(), after: "jour bonsoir".to_owned() });
+        assert_eq!(rig.engine.learned.len(), 0);
+    }
+
+    #[test]
+    fn a_swipe_shows_its_alternatives_in_slot_order() {
+        let mut rig = wide_rig(&[("ou", 180.0), ("où", 170.0), ("oi", 160.0), ("oy", 150.0)]);
+        let step = rig.swipe_step("ou");
+        let shown = rig.engine.last_word.as_ref().unwrap().alternatives.clone();
+        let slot = |index: usize| shown.get(index).cloned().unwrap_or_default();
+        let bar = Command::Suggestions { center: slot(CENTER_SLOT), left: slot(LEFT_SLOT), right: slot(RIGHT_SLOT) };
+        assert_ne!(shown, Vec::<String>::new());
+        assert!(step.commands.contains(&bar), "{:?}", step.commands);
+    }
+
+    #[test]
+    fn a_tap_on_the_line_between_two_slots_goes_to_the_right_one() {
+        let rig = plain_rig();
+        let [left, center, right] = SLOT_CENTERS;
+        assert_eq!(rig.engine.slot_at(rig.engine.width * (left + center) / 2.0), CENTER_SLOT);
+        assert_eq!(rig.engine.slot_at(rig.engine.width * (center + right) / 2.0), RIGHT_SLOT);
     }
 }

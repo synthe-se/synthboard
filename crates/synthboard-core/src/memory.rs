@@ -502,6 +502,17 @@ mod tests {
         assert!(memory.traces.len() <= TRACES_PER_WORD);
     }
 
+    #[test]
+    fn taking_a_trace_back_needs_both_its_word_and_its_shape() {
+        let (first, second) = (vec![[1.0, 1.0]], vec![[2.0, 2.0]]);
+        let mut memory = Memory::default();
+        memory.add_trace("mot", first.clone());
+        memory.add_trace("mot", second.clone());
+        memory.add_trace("autre", first.clone());
+        memory.remove_trace("mot", &first);
+        assert_eq!(memory.traces, [("mot".to_owned(), second), ("autre".to_owned(), first)]);
+    }
+
     fn words(text: &str) -> Vec<String> {
         text.split(' ').map(str::to_owned).collect()
     }

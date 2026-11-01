@@ -157,6 +157,12 @@ mod tests {
     }
 
     #[test]
+    fn an_exact_keyword_ranks_before_a_keyword_prefix() {
+        let catalog = Catalog::parse("Animals\t🐁\t\tsouris|rat|moulin\nAnimals\t🐈\t\tchat|cat|mou\n");
+        assert_eq!(catalog.search("mou"), ["🐈", "🐁"]);
+    }
+
+    #[test]
     fn an_empty_query_finds_nothing() {
         assert_eq!(Catalog::parse(SAMPLE).search("  "), [] as [std::string::String; 0]);
     }

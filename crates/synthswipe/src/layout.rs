@@ -132,6 +132,16 @@ mod tests {
     }
 
     #[test]
+    fn a_gesture_spells_with_letters_and_the_apostrophe() {
+        for label in ['a', 'é', 'я', APOSTROPHE] {
+            assert!(is_key_label(label), "{label}");
+        }
+        for label in ['1', ' ', '-', '⌫'] {
+            assert!(!is_key_label(label), "{label}");
+        }
+    }
+
+    #[test]
     fn pitch_is_the_neighbour_gap() {
         let layout = Layout::new([key('a', 0.0), key('b', 2.0), key('c', 4.0)]);
         assert_eq!(layout.map(|layout| layout.pitch()), Ok(2.0));

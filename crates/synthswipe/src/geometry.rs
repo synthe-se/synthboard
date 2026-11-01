@@ -143,6 +143,7 @@ mod tests {
     fn the_middle_of_nothing_is_nothing() {
         assert_eq!(middle::<u32>(&[]), None);
         assert_eq!(middle(&[1, 2, 3]), Some(2));
+        assert_eq!(middle(&[1, 2, 3, 4, 5]), Some(3));
     }
 
     #[test]

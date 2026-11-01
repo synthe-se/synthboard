@@ -208,6 +208,12 @@ mod tests {
         Affinities::from_bytes(&Affinities::to_bytes(entries))
     }
 
+    /// Shipped tables hold these hashes, so the function can never change.
+    #[test]
+    fn a_pair_hashes_as_fnv1a_over_both_words_and_a_zero() {
+        assert_eq!(pair_hash("je", "suis"), 0x901d_bb64);
+    }
+
     #[test]
     fn the_previous_word_decides_between_two_words() {
         let model = table(COUNTS);

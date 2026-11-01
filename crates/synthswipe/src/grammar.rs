@@ -408,6 +408,19 @@ mod tests {
     }
 
     #[test]
+    fn an_adverb_that_is_also_a_verb_form_passes_after_a_modal() {
+        let grammar = parse(NOUNS);
+        assert!(grammar.score(&history(&["peut"]), "plus").abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_verb_a_noun_could_replace_earns_less_than_a_required_one() {
+        let grammar = parse(NOUNS);
+        assert!((grammar.score(&history(&["je", "veux", "la"]), "porter") - MAY_AGREE).abs() < f32::EPSILON);
+        assert!((grammar.score(&history(&["il", "peut"]), "porter") - AGREES).abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn aller_past_an_adverb_is_a_plain_verb() {
         let grammar = parse(NOUNS);
         let before = history(&["ça", "va", "bien"]);

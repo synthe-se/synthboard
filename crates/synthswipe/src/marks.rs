@@ -370,6 +370,21 @@ mod tests {
     }
 
     #[test]
+    fn a_stroke_shorter_than_two_keys_is_never_straight() {
+        let stroke = |length: f32| [Sample { x: 0.0, y: 0.0, t_ms: 0 }, Sample { x: length, y: 0.0, t_ms: 1 }];
+        assert!(!is_straight(&stroke(1.0), 1.0));
+        assert!(is_straight(&stroke(2.0), 1.0));
+        assert!(!is_straight(&stroke(5.0), 3.0));
+        assert!(is_straight(&stroke(6.0), 3.0));
+    }
+
+    #[test]
+    fn a_turn_is_measured_wherever_it_stands_on_the_board() {
+        assert!(turning([0.0, 1.0], [1.0, 1.0], [2.0, 1.0]).abs() < 1e-5);
+        assert!((turning([0.0, 1.0], [1.0, 1.0], [1.0, 2.0]) - PI / 2.0).abs() < 1e-5);
+    }
+
+    #[test]
     fn a_circle_on_a_key_is_a_loop() {
         let Some(layout) = grid() else {
             return;
@@ -429,5 +444,6 @@ mod tests {
         assert!(agreement("pue", &[Mark::Pause('u')]) > agreement("pe", &[Mark::Pause('u')]));
         assert!(agreement("saucisse", &[Mark::Loop('s')]) > agreement("saucise", &[Mark::Loop('s')]));
         assert!(agreement("été", &[]).abs() < f32::EPSILON);
+        assert!(agreement("bon", &[Mark::Loop('z')]) < 0.0);
     }
 }

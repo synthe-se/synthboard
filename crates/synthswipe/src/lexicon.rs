@@ -508,6 +508,14 @@ mod tests {
     }
 
     #[test]
+    fn a_word_is_found_in_the_way_the_lexicon_writes_it() {
+        let lexicon = Lexicon::new([("Paris", 150.0), ("bon", 100.0)]);
+        assert_eq!(lexicon.surface("paris"), Some("Paris"));
+        assert_eq!(lexicon.surface("BON"), Some("bon"));
+        assert_eq!(lexicon.surface("londres"), None);
+    }
+
+    #[test]
     fn a_lexicon_with_words_is_not_empty() {
         assert!(!Lexicon::new([("bon", 1.0)]).is_empty());
     }

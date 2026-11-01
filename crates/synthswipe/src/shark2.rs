@@ -589,6 +589,7 @@ mod tests {
     #[test]
     fn location_weight_favours_the_ends_of_the_gesture() {
         assert!((location_weight(0, 65) - 1.5).abs() < 1e-3);
+        assert!((location_weight(16, 65) - 1.0).abs() < 1e-3);
         assert!((location_weight(32, 65) - 0.5).abs() < 1e-3);
         assert!((location_weight(64, 65) - 1.5).abs() < 1e-3);
     }
@@ -621,6 +622,21 @@ mod tests {
     fn a_straight_path_has_no_hook() {
         let path: Vec<Point> = (0_u8..20).map(|x| [f32::from(x) * 0.25, 0.0]).collect();
         assert!(without_end_hook(&path, 1.0).is_none());
+    }
+
+    /// Slanted and far from the origin, so that each coordinate and each angle counts.
+    #[test]
+    fn a_straight_path_has_no_hook_anywhere_on_the_board() {
+        let path: Vec<Point> = (0_u8..40).map(|step| [10.0 + f32::from(step) * 0.045, 30.0 - f32::from(step) * 0.09]).collect();
+        assert!(without_end_hook(&path, 1.0).is_none());
+    }
+
+    #[test]
+    fn a_hook_is_cut_at_its_sharpest_corner() {
+        let stroke = (0_u8..=12).map(|x| [f32::from(x) * 0.25, 0.0]);
+        let hook = (1_u8..=3).map(|y| [3.0, f32::from(y) * 0.25]);
+        let path: Vec<Point> = stroke.chain(hook).collect();
+        assert_eq!(without_end_hook(&path, 1.0).as_deref(), path.get(..=12));
     }
 
     #[test]
