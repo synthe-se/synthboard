@@ -15,7 +15,7 @@ use crate::traces::{Traced, layout_of, next_word_pairs};
 
 /// The margins tried, in nats, around the provisional one: from a table's whole
 /// span of 1.2 to past the 1.5 of one agreement alone.
-pub const MARGINS: [f32; 5] = [0.5, 1.0, 1.5, NEXT_WORD_MARGIN, 2.5];
+pub const MARGINS: [f32; 5] = [0.5, 1.0, NEXT_WORD_MARGIN, 1.75, 2.5];
 
 /// What revisions would do at one margin.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]

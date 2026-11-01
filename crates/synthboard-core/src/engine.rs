@@ -122,10 +122,10 @@ const RETRY_REACH: f32 = 0.6;
 const RETRY_TRIES: usize = 2;
 /// How much better an alternative must suit the next word than the word written, for
 /// that word to be revised, in nats of the gesture score: context points times
-/// `context_weight`. The table alone spans 1.2 here and one agreement is worth 1.5,
-/// so this takes an agreement backed by the corpus. Provisional, until tuned on the
-/// owner's traces with `synthswipe-bench --personal`.
-pub const NEXT_WORD_MARGIN: f32 = 1.75;
+/// `context_weight`. One agreement is worth 1.5, so it takes more than that alone. Tuned
+/// with `synthswipe-bench --personal` on the owner's 256 pairs of gestures, 2026-11-01:
+/// 3 helped and none hurt at 1.0 and 1.5, against 4 and 4 at 0.5, and 1 and 0 at 1.75.
+pub const NEXT_WORD_MARGIN: f32 = 1.5;
 /// Corrections kept for the session. A correction stands for the same gesture at
 /// once, even drawn too loosely to match its trace: the owner corrected one word
 /// three times in a row without it coming first.
