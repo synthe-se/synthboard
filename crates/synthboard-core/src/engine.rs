@@ -538,7 +538,7 @@ fn title_case(word: &str) -> String {
     })
 }
 
-fn opens_sentence(before: &str) -> bool {
+fn opens_sentence(before: &str, grammar: Option<&Grammar>) -> bool {
     let trimmed = before.trim_end_matches([' ', '\u{a0}', '(', '[', '«', '"', '“']);
     if trimmed.is_empty() || trimmed.ends_with('\n') {
         return true;
@@ -548,18 +548,12 @@ fn opens_sentence(before: &str) -> bool {
     }
     let last_word = trimmed.rsplit(char::is_whitespace).next().unwrap_or("");
     let lower = last_word.to_lowercase();
-    !matches!(lower.as_str(), "m." | "mme." | "dr." | "etc." | "e.g." | "i.e.")
+    !grammar.is_some_and(|grammar| grammar.is_abbreviation(&lower))
         && !last_word.chars().rev().nth(1).is_some_and(|c| c.is_ascii_digit())
 }
 
-/// English first-person forms take a capital wherever they stand.
-/// Words the bar always writes with a capital, whatever the shift says.
-fn always_capital(word: &str) -> bool {
-    matches!(word, "i" | "i'm" | "i'll" | "i've" | "i'd" | "i’m" | "i’ll" | "i’ve" | "i’d")
-}
-
-fn cased(shift: Shift, word: &str) -> String {
-    if shift == Shift::Off && always_capital(word) {
+fn cased(shift: Shift, word: &str, grammar: Option<&Grammar>) -> String {
+    if shift == Shift::Off && grammar.is_some_and(|grammar| grammar.keeps_capital(word)) {
         return title_case(word);
     }
     match shift {
@@ -600,10 +594,23 @@ impl Decoding {
     /// the user's habit and the session's language. Swipes and taps share it.
     fn score(&self, previous: &str, history: &[String], word: &str) -> f32 {
         let table = self.affinities.as_ref().map_or(0.0, |table| table.score(previous, word));
-        let agreement = self.grammar.as_ref().map_or(0.0, |grammar| GRAMMAR_WEIGHT * grammar.score(history, word));
+        let languages = self.lexicon.languages(word);
         let habit = HABIT_WEIGHT * self.memory.habit_after(history, previous, word)
             + FAMILIAR_WEIGHT * self.memory.familiarity(word);
-        table + agreement + habit + language_tilt(self.lexicon.languages(word), self.leaning)
+        table + self.agreement(history, word, languages) + habit + language_tilt(languages, self.leaning)
+    }
+
+    /// Agreement is French, and an English sentence is not bad French. So it
+    /// counts in full from where a session starts down to none at a neutral
+    /// leaning: a ramp rather than a switch, as one word moves the leaning a
+    /// lot. It can also never cost a word that is only of the second language.
+    fn agreement(&self, history: &[String], word: &str, languages: u8) -> f32 {
+        let Some(grammar) = &self.grammar else {
+            return 0.0;
+        };
+        let fit = grammar.score(history, word);
+        let fit = if languages == SECOND_LANGUAGE { fit.max(0.0) } else { fit };
+        GRAMMAR_WEIGHT * (self.leaning / LANGUAGE_START).clamp(0.0, 1.0) * fit
     }
 
     fn context(&self, word: &str) -> f32 {
@@ -662,7 +669,7 @@ impl Decoding {
     pub fn preview(&self, path: &[Sample]) -> String {
         self.rank(path)
             .first()
-            .map_or_else(String::new, |word| cased(self.shift, &self.memory.form(word)))
+            .map_or_else(String::new, |word| cased(self.shift, &self.memory.form(word), self.grammar.as_deref()))
     }
 }
 
@@ -1176,7 +1183,7 @@ impl Engine {
 
     /// The word before the cursor, or the sentence start.
     fn previous_token(&self) -> String {
-        if opens_sentence(&self.before) {
+        if opens_sentence(&self.before, self.grammar.as_deref()) {
             return SENTENCE_START.to_owned();
         }
         let tail: String = {
@@ -1384,7 +1391,7 @@ impl Engine {
             && !self.field.is_password()
             && !self.field.is_address()
             && (flags & android::CAP_CHARACTERS != 0
-                || (flags & android::CAP_SENTENCES != 0 && opens_sentence(&self.before))
+                || (flags & android::CAP_SENTENCES != 0 && opens_sentence(&self.before, self.grammar.as_deref()))
                 || (flags & android::CAP_WORDS != 0
                     && self.before.chars().next_back().is_none_or(char::is_whitespace)));
         let next = if auto { Shift::Auto } else { Shift::Off };
@@ -1904,7 +1911,7 @@ impl Engine {
     fn token_before(&self, word: &str) -> String {
         let cut = self.before.len().saturating_sub(word.len());
         let earlier = self.before.get(..cut).unwrap_or("");
-        if opens_sentence(earlier) {
+        if opens_sentence(earlier, self.grammar.as_deref()) {
             return SENTENCE_START.to_owned();
         }
         tokens(earlier).pop().unwrap_or_else(|| SENTENCE_START.to_owned())
@@ -2411,7 +2418,7 @@ impl Engine {
     }
 
     fn apply_case(&self, word: &str) -> String {
-        cased(self.shift, &self.memory.form(word))
+        cased(self.shift, &self.memory.form(word), self.grammar.as_deref())
     }
 
     fn show_alternatives(&mut self, alternatives: &[String]) {
@@ -2617,6 +2624,7 @@ mod tests {
         ime_options: 0,
     };
     const DENSITY: f32 = 2.625;
+    const RULES: &str = include_str!("../../../android/app/src/main/assets/grammar.tsv");
 
     struct Rig {
         engine: Engine,
@@ -3360,12 +3368,68 @@ mod tests {
         rig.engine.set_lexicon(Arc::new(lexicon));
         rig.engine.set_language(
             Arc::new(Affinities::default()),
-            Arc::new(Grammar::parse("suis\t1\nsous\t0\n")),
+            Arc::new(Grammar::parse(&format!("{RULES}suis\t1\nsous\t0\n"))),
             Arc::new(NextWords::default()),
         );
         rig.send(Event::Text { text: "je ".to_owned() });
         rig.swipe("sous");
         assert!(rig.text.ends_with("suis"), "{}", rig.text);
+    }
+
+    /// A rig that reads this sentence, with these forms and words.
+    fn sentence_rig(words: &[(&'static str, f32, u8)], forms: &str, sentence: &str) -> Rig {
+        let mut rig = plain_rig();
+        rig.engine.set_lexicon(Arc::new(Lexicon::with_languages(words.iter().copied())));
+        let grammar = Grammar::parse(&format!("{RULES}{forms}"));
+        rig.engine.set_language(Arc::new(Affinities::default()), Arc::new(grammar), Arc::new(NextWords::default()));
+        rig.send(Event::Text { text: sentence.to_owned() });
+        rig
+    }
+
+    fn ranked(rig: &Rig, word: &str) -> Vec<String> {
+        let keys: Vec<(f32, f32)> = synthswipe::fold(word).iter().map(|letter| rig.center(&letter.to_string())).collect();
+        let path: Vec<Sample> = keys.into_iter().zip(0..).map(|((x, y), index)| Sample { x, y, t_ms: index * 40 }).collect();
+        rig.engine.snapshot().unwrap().rank(&path)
+    }
+
+    #[test]
+    fn a_noun_after_a_modal_and_an_article_stays_the_noun() {
+        let words = [("porte", 151.0, FIRST_LANGUAGE), ("porter", 132.0, FIRST_LANGUAGE), ("je", 200.0, FIRST_LANGUAGE)];
+        let rig = sentence_rig(&words, "porte\t5\nporter\t64\n", "je veux la ");
+        assert_eq!(ranked(&rig, "porte").first().map(String::as_str), Some("porte"));
+    }
+
+    #[test]
+    fn french_grammar_never_rewrites_an_english_sentence() {
+        let words = [
+            ("user", 140.0, SECOND_LANGUAGE),
+            ("usé", 150.0, FIRST_LANGUAGE),
+            ("have", 180.0, SECOND_LANGUAGE),
+            ("the", 200.0, SECOND_LANGUAGE),
+        ];
+        let mut rig = sentence_rig(&words, "user\t64\nusé\t128\n", "I have a ");
+        rig.engine.leaning = next_leaning(next_leaning(LANGUAGE_START, SECOND_LANGUAGE), SECOND_LANGUAGE);
+        assert!(rig.engine.leaning < 0.0);
+        assert_eq!(ranked(&rig, "user").first().map(String::as_str), Some("user"));
+    }
+
+    #[test]
+    fn agreement_counts_in_full_when_french_and_not_at_all_when_english() {
+        let words = [("suis", 150.0, FIRST_LANGUAGE), ("sous", 150.0, FIRST_LANGUAGE), ("site", 150.0, SECOND_LANGUAGE)];
+        let mut rig = sentence_rig(&words, "suis\t1\nsous\t2\nsite\t2\n", "je ");
+        let agreement = |rig: &Rig, word: &str| {
+            let decoding = rig.engine.snapshot().unwrap();
+            let languages = decoding.lexicon.languages(word);
+            decoding.agreement(&decoding.history, word, languages)
+        };
+        assert!((agreement(&rig, "suis") - GRAMMAR_WEIGHT).abs() < 0.001);
+        assert!((agreement(&rig, "sous") + GRAMMAR_WEIGHT).abs() < 0.001);
+        assert!(agreement(&rig, "site").abs() < 0.001, "only the second language");
+        rig.engine.leaning = LANGUAGE_START / 2.0;
+        assert!((agreement(&rig, "suis") - GRAMMAR_WEIGHT / 2.0).abs() < 0.001);
+        rig.engine.leaning = -LANGUAGE_START;
+        assert!(agreement(&rig, "sous").abs() < 0.001);
+        assert!(agreement(&rig, "suis").abs() < 0.001);
     }
 
     #[test]
@@ -3400,6 +3464,7 @@ mod tests {
             ("the", 180.0, SECOND_LANGUAGE),
             ("what", 170.0, SECOND_LANGUAGE),
         ])));
+        rig.engine.set_language(Arc::new(Affinities::default()), Arc::new(Grammar::parse(RULES)), Arc::new(NextWords::default()));
         rig.swipe("il");
         assert_eq!(rig.text, "il");
         rig.send(Event::Hidden);
@@ -3413,8 +3478,10 @@ mod tests {
 
     #[test]
     fn english_i_is_always_capital() {
-        assert_eq!(cased(Shift::Off, "i'll"), "I'll");
-        assert_eq!(cased(Shift::Off, "il"), "il");
+        let grammar = Grammar::parse(RULES);
+        assert_eq!(cased(Shift::Off, "i'll", Some(&grammar)), "I'll");
+        assert_eq!(cased(Shift::Off, "il", Some(&grammar)), "il");
+        assert_eq!(cased(Shift::Off, "i'll", None), "i'll");
     }
 
     #[test]
@@ -4788,12 +4855,15 @@ mod tests {
 
     #[test]
     fn sentence_rules_skip_abbreviations() {
-        assert!(opens_sentence(""));
-        assert!(opens_sentence("Fin. "));
-        assert!(opens_sentence("Ligne\n"));
-        assert!(!opens_sentence("Bonjour M. "));
-        assert!(!opens_sentence("le 3. "));
-        assert!(!opens_sentence("mot "));
+        let grammar = Grammar::parse(RULES);
+        let opens = |text: &str| opens_sentence(text, Some(&grammar));
+        assert!(opens(""));
+        assert!(opens("Fin. "));
+        assert!(opens("Ligne\n"));
+        assert!(!opens("Bonjour M. "));
+        assert!(!opens("le 3. "));
+        assert!(!opens("mot "));
+        assert!(opens_sentence("Bonjour M. ", None));
     }
 
     #[test]

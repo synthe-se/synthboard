@@ -1,0 +1,48 @@
+# The language rules of the keyboard, written by hand, so they live in Git rather
+# than in the generated forms.tsv. The keyboard reads this file then forms.tsv.
+#
+# A rule is `@name TAB words`, with words separated by spaces. Grammar reads the
+# French ones to agree verbs, and the engine reads the last group. A line it does
+# not know is skipped, and without this file every rule is simply absent.
+
+# The bits of a form's mask in forms.tsv. tools/pack-grammar.py reads them here.
+@bit	1s	1
+@bit	2s	2
+@bit	3s	4
+@bit	1p	8
+@bit	2p	16
+@bit	3p	32
+@bit	infinitive	64
+@bit	participle	128
+
+# Who a subject pronoun is.
+@subject	1s	je j'
+@subject	2s	tu
+@subject	3s	il elle on
+@subject	1p	nous
+@subject	2p	vous
+@subject	3p	ils elles
+
+# What may stand between a subject and its verb.
+@clitic	ne n' me m' te t' se s' le la les l' lui leur y en nous vous
+# What may stand between a verb and the verb form it calls for.
+@adverb	pas plus jamais encore bien mieux toujours déjà vraiment aussi même alors peut-être souvent
+# Forms that call for an infinitive: `il peut être`, `elle pourrait venir`.
+@modal	peux peut pouvons pouvez peuvent pourrais pourrait pourrions pourriez pourraient dois doit devons devez doivent devrais devrait devrions devriez devraient veux veut voulons voulez veulent voudrais voudrait voudrions voudriez voudraient vais vas va allons allez vont faut faudrait sais sait savons savez savent saurait
+# The modals that are also plain verbs: `ça va bien` calls for nothing.
+@plain_modal	vais vas va allons allez vont
+# Forms that call for a past participle: `j'ai mangé`, `a été optimisé`.
+@auxiliary	ai as a avons avez ont avais avait avions aviez avaient aurait été
+# Clitics that make the next word a verb: `se baser`, `il se lève`.
+@reflexive	se s'
+# Clitics that are also articles: `je veux la porte` calls for no verb.
+@article	le la les l'
+# After one of these, `nous`, `vous` and `elle` are no subject: `merci pour vous`.
+@preposition	à de d' pour avec sans chez par sur sous dans en vers contre entre après avant pendant depuis devant derrière envers selon malgré
+# Words a token also admits, beside what its rule says: `s'il`.
+@also_after	s'	il ils
+
+# Words whose last dot does not end a sentence.
+@abbreviation	m. mme. dr. etc. e.g. i.e.
+# Words written with a capital wherever they stand: English's first person.
+@capital	i i'm i'll i've i'd i’m i’ll i’ve i’d

@@ -60,7 +60,8 @@ class SynthboardService : InputMethodService() {
         Core.onIo {
             Settings.traceKey(this)?.let(keyboard::setTraceKey)
             keyboard.loadLexicon(readAsset("lexicon.csv"))
-            keyboard.loadLanguage(readAsset("affinity.bin"), readAsset("forms.tsv"), readAsset("next.tsv"))
+            val grammar = readAsset("grammar.tsv") + readAsset("forms.tsv")
+            keyboard.loadLanguage(readAsset("affinity.bin"), grammar, readAsset("next.tsv"))
             // Optional: without the model the geometry answers alone.
             runCatching { readAsset("neural.bin") }.onSuccess(keyboard::loadNeural)
             handler.post { send(Event.LanguageReady) }

@@ -1,16 +1,18 @@
 """Builds the French verb agreement asset from Lexique 3.83.
 
-Each line is `form TAB mask`, where the bits are 1s 2s 3s 1p 2p 3p, then 64 for an
-infinitive and 128 for a past participle, and 0 means a known word that is no verb form. Run with `python3 -I`.
+Each line is `form TAB mask`, with the bits that `grammar.tsv` names, and 0 means a
+known word that is no verb form. Run with `python3 -I`.
 """
 import csv
 import pathlib
 import sys
 
 ROOT = pathlib.Path(sys.argv[0]).resolve().parent.parent
-BITS = {"1s": 1, "2s": 2, "3s": 4, "1p": 8, "2p": 16, "3p": 32}
-INFINITIVE = 64
-PARTICIPLE = 128
+ASSETS = ROOT / "android/app/src/main/assets"
+RULES = [line.split("\t") for line in (ASSETS / "grammar.tsv").read_text("utf-8").splitlines()]
+BITS = {rule[1]: int(rule[2]) for rule in RULES if rule[0] == "@bit"}
+INFINITIVE = BITS.pop("infinitive")
+PARTICIPLE = BITS.pop("participle")
 
 masks = {}
 with open(ROOT / "data/raw/lexique/Lexique383.tsv", encoding="utf-8", newline="") as source:
@@ -30,6 +32,6 @@ with open(ROOT / "data/raw/lexique/Lexique383.tsv", encoding="utf-8", newline=""
                     mask |= PARTICIPLE
         masks[form] = mask
 
-out = ROOT / "android/app/src/main/assets/forms.tsv"
+out = ASSETS / "forms.tsv"
 out.write_text("".join(f"{form}\t{mask}\n" for form, mask in sorted(masks.items())), encoding="utf-8")
 print(len(masks), "forms,", sum(1 for mask in masks.values() if mask), "conjugated")
