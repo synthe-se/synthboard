@@ -49,6 +49,11 @@ library="$scratch/lib/arm64-v8a/libsynthboard_ffi.so"
 "$readelf" -dW "$library" > "$scratch/dynamic"
 grep -q GNU_RELRO "$scratch/segments" || fail "the library has no RELRO"
 grep -q BIND_NOW "$scratch/dynamic" || fail "the library binds lazily"
+# A strong symbol nothing provides stops the library loading, and the keyboard with it.
+[ -z "$("$(dirname "$readelf")/llvm-nm" -D --undefined-only "$library" | grep -E "^ +U " | grep -v "@" | grep -v " __android_log_")" ] ||
+    fail "the library needs symbols nothing provides"
+"$readelf" -n "$library" | grep -q "aarch64 feature: BTI" || fail "the library has no branch targets"
+"$(dirname "$readelf")/llvm-objdump" -d "$library" | grep -q paciasp || fail "the library signs no return address"
 ! grep GNU_STACK "$scratch/segments" | grep -q ' RWE ' || fail "the library's stack is executable"
 ! strings "$library" | grep -qE '/Users/|/private/|claude-' || fail "the library names this machine's paths"
 

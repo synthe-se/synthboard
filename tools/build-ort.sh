@@ -42,6 +42,8 @@ for d in $seed/_deps/*-src(/); do
 done
 
 prefix_map="-ffile-prefix-map=$infer=ort -ffile-prefix-map=$HOME=~"
+# Return-address signing and branch targets. Hints on older cores, and the NDK runtime carries them too.
+[[ $platform == android ]] && prefix_map+=" -mbranch-protection=standard"
 common=(
   -Wno-dev -G Ninja -DCMAKE_BUILD_TYPE=$config -DPython_EXECUTABLE=$shim -DPython3_EXECUTABLE=$shim
   -DFETCHCONTENT_FULLY_DISCONNECTED=ON -DFETCHCONTENT_QUIET=ON
@@ -60,7 +62,7 @@ if [[ $platform == android ]]; then
   plat=(
     -DCMAKE_TOOLCHAIN_FILE=$ndk/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a
     -DANDROID_PLATFORM=android-$min_sdk -DANDROID_MIN_SDK=$min_sdk -DANDROID_STL=c++_static
-    -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=false -Donnxruntime_USE_SVE=ON -Donnxruntime_USE_KLEIDIAI=ON
+    -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=false -Donnxruntime_USE_SVE=ON -Donnxruntime_USE_KLEIDIAI=OFF
     "-DCMAKE_CXX_FLAGS=-Wno-error=unused-const-variable $prefix_map"
   )
   ar=$ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar

@@ -63,7 +63,7 @@ The keyboard declares no permission and contains no network code. `tools/check-r
 - `cargo vet` still exempts the crates no trusted organisation has audited at these versions, and imported audits cover the rest. Any update must pass again.
 - A forged trace record can only pollute statistics: ingestion drops lines that could break the tools.
 - `FLAG_SECURE` was verified on the phone with a capture, and is not covered by a test.
-- No branch protection: BTI and PAC need `-Z branch-protection`, which Rust only offers on nightly, for a standard library that stable does not ship built that way. A BTI binary is only enforced if every object in it carries the note, so C++ alone would add nothing. Memory tagging stays the main defence.
+- Branch protection covers this library only: `libsynthboard_ffi.so` carries BTI and PAC, with the standard library and ONNX Runtime rebuilt for it, and the link fails on an unmarked object. KleidiAI is left out of ONNX Runtime for that reason: its assembly has no marks, and it only runs on SME cores. Getting there takes `RUSTC_BOOTSTRAP` on the stable compiler, for two flags that Rust still calls unstable.
 
 ## Standards
 

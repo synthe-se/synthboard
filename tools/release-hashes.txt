@@ -2,4 +2,4 @@
 # Update a line in the commit that deliberately changes that file.
 1c6ed962f850721f328e90bddbf6dd24af4aee923f7a4f602d9ce1966675ca73  assets/neural.bin
 b18e373033493c6599651c16e8b4faf73a1029603cfb297efcd41014c2007aad  assets/trace.pub
-0282622447b8a6719211e4207543daed628d6e23901a6dae935fd19098248b5c  libonnxruntime.a
+13f35cfd40cb62b7f7801fdda99235c3a3491a266e45429a2d467dee5ba07154  libonnxruntime.a
