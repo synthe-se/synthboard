@@ -1,6 +1,7 @@
 package app.synthboard
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
@@ -91,6 +92,14 @@ open class SettingsActivity : Activity() {
         setup()
         typing()
         learned()
+        action(R.string.third_party) { showThirdParty() }
+    }
+
+    /** The licences that travel with the code, a dialog so that no new component is exported. */
+    private fun showThirdParty() {
+        val notices = assets.open(THIRD_PARTY).use { it.readBytes().decodeToString() }
+        AlertDialog.Builder(this).setTitle(R.string.third_party).setMessage(notices)
+            .setPositiveButton(android.R.string.ok, null).show()
     }
 
     /** A place to type without leaving the app, while working on the keyboard. */
@@ -255,5 +264,6 @@ open class SettingsActivity : Activity() {
         const val MIN_HEIGHT = 75
         const val MAX_HEIGHT = 125
         const val TAILSCALE = "com.tailscale.ipn"
+        const val THIRD_PARTY = "third_party.txt"
     }
 }

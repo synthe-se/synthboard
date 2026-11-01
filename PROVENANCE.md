@@ -53,7 +53,6 @@ ONNX Runtime 1.31.1, MIT, commit `6af1a932e2286d5c58166085d24c68783033edee`, sou
 | Abseil | 20250814.0 | Apache-2.0 | Compiled |
 | cpuinfo | `66ee79c0` | BSD-2-Clause | Compiled |
 | FlatBuffers | 23.5.26 | Apache-2.0 | Compiled |
-| KleidiAI | 1.30.0 | Apache-2.0 | Compiled |
 | ONNX | 1.22.0 | Apache-2.0 | Compiled |
 | Protocol Buffers, lite runtime | 33.6 | BSD-3-Clause | Compiled |
 | Eigen | `1d8b82b0` | MPL-2.0, some files under others | Headers |
@@ -62,5 +61,7 @@ ONNX Runtime 1.31.1, MIT, commit `6af1a932e2286d5c58166085d24c68783033edee`, sou
 | Boost.Mp11 | 1.82.0 | BSL-1.0 | Headers |
 | nlohmann/json | 3.11.3 | MIT | Headers |
 | SafeInt | 3.0.28 | MIT | Headers |
+
+`android/app/src/main/assets/third_party.txt` carries these components' licences and copyrights to the app, with the Rust crates, the standard library and the NDK runtime.
 
 The NDK and the Rust compiler are pinned to their latest stable versions, in `android/gradle.properties` and `rust-toolchain.toml`.

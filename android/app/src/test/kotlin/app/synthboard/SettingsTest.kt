@@ -23,6 +23,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowAlertDialog
 import java.io.File
 import java.io.FileNotFoundException
 import java.security.GeneralSecurityException
@@ -124,6 +125,16 @@ class SettingsTest {
         assertFalse(context.getString(R.string.development) in shown)
         assertFalse(context.getString(R.string.record_traces) in shown)
         assertFalse(context.getString(R.string.send_traces) in shown)
+    }
+
+    @Test
+    fun the_licences_can_be_read_in_the_app() {
+        val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
+        press(activity, R.string.third_party)
+        val shown = shadowOf(ShadowAlertDialog.getLatestAlertDialog()).message.toString()
+        assertEquals(context.assets.open("third_party.txt").use { it.readBytes().decodeToString() }, shown)
+        assertTrue("ONNX Runtime" in shown)
+        assertFalse("KleidiAI" in shown)
     }
 
     @Test
