@@ -1,9 +1,11 @@
 #!/bin/zsh
-# Builds ONNX Runtime 1.31.1 as one static archive with cmake alone: no build.py, no Python code.
+# Builds ONNX Runtime 1.31.1 as one static archive with cmake and ninja, without build.py. Python still
+# runs: CMake's probes, and the helpers of its configure step. Only gen_proto.py is replaced, below.
 # usage: build-ort.sh <android|mac> <Release|MinSizeRel> [jobs]
-# The kernels are reduced to the model's by ONNX Runtime's Python tool, whose output sits in the seed tree.
-# Inputs reused from the earlier spike (see inference_bench.md): the source tree, fetched deps and the
-# kernel-reduced sources `op_reduction.generated`, plus the recorded cmake line of that build.
+# It needs a seed tree, a finished earlier build at $seed, and fails without one. That tree gives the
+# fetched dependencies, the protoc binary, the protobuf outputs, and `op_reduction.generated`, the kernels
+# reduced to the model's by ONNX Runtime's own Python tool. Nothing here makes those from nothing.
+# A new flag only takes effect in a new build directory: remove $build first.
 set -eu
 platform=$1; config=$2; jobs=${3:-6}
 root=${0:A:h:h}
@@ -13,6 +15,7 @@ seed=$infer/ortbuild/min_ext/MinSizeRel     # earlier Android tree: deps and gen
 ndk=$HOME/Library/Android/sdk/ndk/30.0.16248370
 build=$infer/ortbuild/bench_${platform}_$config
 dist=$infer/$platform
+[[ -d $seed/_deps ]] || { echo "No seed tree at $seed: see the header of this script."; exit 1; }
 mkdir -p $build $dist
 
 # The generated kernel registrations come from the Python reducer; reuse them, do not regenerate.
@@ -36,6 +39,7 @@ for d in $seed/_deps/*-src(/); do
   n=${${d:t}%-src}; deps+=(-DFETCHCONTENT_SOURCE_DIR_${(U)n}=$d)
 done
 
+prefix_map="-ffile-prefix-map=$infer=ort -ffile-prefix-map=$HOME=~"
 common=(
   -Wno-dev -G Ninja -DCMAKE_BUILD_TYPE=$config -DPython_EXECUTABLE=$shim -DPython3_EXECUTABLE=$shim
   -DFETCHCONTENT_FULLY_DISCONNECTED=ON -DFETCHCONTENT_QUIET=ON
@@ -47,18 +51,21 @@ common=(
   -Donnxruntime_DISABLE_FLOAT8_TYPES=ON -Donnxruntime_DISABLE_FLOAT4_TYPES=ON
   -DONNX_CUSTOM_PROTOC_EXECUTABLE=$seed/_deps/protoc_binary-src/bin/protoc
   -Donnxruntime_DEV_MODE=OFF
+  # `__FILE__` lands in the strings of the library, and tools/check-release.sh refuses a machine path.
+  "-DCMAKE_C_FLAGS=$prefix_map" "-DCMAKE_ASM_FLAGS=$prefix_map"
 )
 if [[ $platform == android ]]; then
   plat=(
     -DCMAKE_TOOLCHAIN_FILE=$ndk/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a
     -DANDROID_PLATFORM=android-29 -DANDROID_MIN_SDK=29 -DANDROID_STL=c++_static
     -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=false -Donnxruntime_USE_SVE=ON -Donnxruntime_USE_KLEIDIAI=ON
-    "-DCMAKE_CXX_FLAGS=-Wno-error=unused-const-variable"
+    "-DCMAKE_CXX_FLAGS=-Wno-error=unused-const-variable $prefix_map"
   )
   ar=$ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar
 else
   # KleidiAI trips a -Werror on this host. The host build proves loading and bytes, not Android kernels.
-  plat=(-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -Donnxruntime_USE_KLEIDIAI=OFF)
+  plat=(-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -Donnxruntime_USE_KLEIDIAI=OFF
+    "-DCMAKE_CXX_FLAGS=$prefix_map")
   ar=$ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar
 fi
 

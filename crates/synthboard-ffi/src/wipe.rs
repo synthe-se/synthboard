@@ -1,7 +1,9 @@
-//! Wipes every block of native memory as it is freed. Memory tagging turns off
-//! the zeroing `hardened_malloc` would do, and text passes through too many short
-//! copies to chase one by one, so the allocator is the one place that sees them
-//! all. It wraps the system allocator: `hardened_malloc` still does the real work.
+//! Wipes this library's native memory as it is freed, as a second layer. Text
+//! passes through too many short copies to chase one by one, so the allocator is
+//! the one place that sees them all. `hardened_malloc` already clears small blocks
+//! on free; this holds on an allocator that does not, and for every size. It wraps
+//! the system allocator, which still does the real work, and reaches only this
+//! library: platform libraries and the Java heap free their memory without it.
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::hint::black_box;

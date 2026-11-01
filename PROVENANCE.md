@@ -37,10 +37,30 @@ Every direct dependency, and why it earns its place. `cargo machete` finds none 
 | `unicode-segmentation` | `synthboard-core` | One backspace removes one grapheme, emoji included |
 | `chacha20poly1305`, `hkdf`, `x25519-dalek` | `synthboard-seal`, `legacy` feature only | Opening records made before HPKE, on the Mac. Not in the phone's library |
 | `ort` | `synthswipe-onnx` | Runs the model, on the static ONNX Runtime 1.31.1 that `tools/build-ort.sh` builds. Chosen for speed on the A520 |
+| `libfuzzer-sys` | `fuzz/` | The fuzzing harness, never shipped |
 | `rayon`, `ruzstd`, `serde`, `serde_json` | `synthswipe-bench` | Mac tools only: parallel replay and reading the datasets |
 | `androidx.autofill` | Android app | The style bundle password managers require for inline suggestions |
 | Robolectric, Roborazzi, JUnit, AndroidX Test | Android tests | The shell's tests, never shipped |
 
 `zeroize_derive` and `syn` run at build time only because `hpke` requires them for one derive.
+
+### Linked into the phone's library
+
+ONNX Runtime 1.31.1, MIT, commit `6af1a932e2286d5c58166085d24c68783033edee`, source in `data/raw/ort/ortsrc`. `tools/build-ort.sh` merges it into `libonnxruntime.a` with what it depends on, at the versions of its `cmake/deps.txt`. MLAS is part of it. The licences below were read from each source tree.
+
+| Component | Version | Licence | In the archive |
+|---|---|---|---|
+| Abseil | 20250814.0 | Apache-2.0 | Compiled |
+| cpuinfo | `66ee79c0` | BSD-2-Clause | Compiled |
+| FlatBuffers | 23.5.26 | Apache-2.0 | Compiled |
+| KleidiAI | 1.30.0 | Apache-2.0 | Compiled |
+| ONNX | 1.22.0 | Apache-2.0 | Compiled |
+| Protocol Buffers, lite runtime | 33.6 | BSD-3-Clause | Compiled |
+| Eigen | `1d8b82b0` | MPL-2.0, some files under others | Headers |
+| date | 3.0.1 | MIT | Headers |
+| GSL | 4.2.1 | MIT | Headers |
+| Boost.Mp11 | 1.82.0 | BSL-1.0 | Headers |
+| nlohmann/json | 3.11.3 | MIT | Headers |
+| SafeInt | 3.0.28 | MIT | Headers |
 
 The NDK and the Rust compiler are pinned to their latest stable versions, in `android/app/build.gradle.kts` and `rust-toolchain.toml`.

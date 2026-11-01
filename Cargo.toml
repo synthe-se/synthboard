@@ -8,8 +8,8 @@ edition = "2024"
 publish = false
 
 [workspace.lints.rust]
-# Deny, not forbid: two reviewed modules of synthboard-ffi may allow it. Every
-# other crate forbids it in its own root.
+# Deny, not forbid: two reviewed modules of synthboard-ffi may allow it. The other
+# libraries forbid it in their own root, and the Mac tools stay under this deny.
 unsafe_code = "deny"
 missing_debug_implementations = "warn"
 

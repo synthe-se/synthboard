@@ -1,8 +1,9 @@
-//! The door into the native library, and the only `unsafe` in the project. Each
-//! thread shares two buffers with Kotlin, outside the Java heap: the garbage
-//! collector never copies them, and nothing here calls back into the JVM, which
-//! would cost more than the rest of a call. The JNI function index is fixed by
-//! the JNI specification.
+//! The door into the native library: with `wipe`, the only `unsafe` in the project.
+//! Each thread shares two direct buffers with Kotlin. On Android they are
+//! non-movable arrays in the Java heap, so the garbage collector leaves no stray
+//! copy. `address` asks the JVM once per buffer where it lives, and the three other
+//! functions never call back into it, which would cost more than the rest of a
+//! call. The JNI function index is fixed by the JNI specification.
 
 use std::cell::RefCell;
 use std::ffi::c_void;
