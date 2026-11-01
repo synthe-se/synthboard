@@ -479,7 +479,6 @@ version = "0.0.0"
 dependencies = [
  "synthboard-seal",
  "synthswipe",
- "unicode-normalization",
  "unicode-segmentation",
  "zeroize",
 ]

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the keyboard's word list from the benchmark dictionaries: `word,weight`
+# Builds the keyboard's word list from the benchmark dictionaries: `word,weight,language`
 # lines, French and English merged, with words below weight 20 dropped: they cost memory and win no gesture.
 set -eu
 

@@ -15,7 +15,7 @@ Every external item that enters this repository is logged here, so that the lice
 | Unicode emoji-test.txt | Unicode License V3 | `data/raw/emoji` | 18.0 | Emoji catalogue |
 | CLDR annotations, cldr-annotations-full | Unicode License V3 | `data/raw/emoji` | 49.0.0 | Emoji search keywords |
 
-The assets in `android/app/src/main/assets` are generated from these sources by `tools/` and are not committed. Personal traces and learned words stay in `data/raw/personal`, which is ignored.
+The assets in `android/app/src/main/assets` are generated from these sources by `tools/` and are not committed, apart from `grammar.tsv`, which is written by hand. Personal traces and learned words stay in `data/raw/personal`, which is ignored.
 
 ## Code
 
