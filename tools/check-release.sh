@@ -2,6 +2,8 @@
 # Fails unless the release keeps its promises: no permission, not debuggable, no
 # backups, the expected components only, memory tagging, a hardened library, its
 # own signing key, and nothing unwanted or known vulnerable in the dependencies.
+# Pass "public" for a build without the owner's trace key: it must then hold none.
+# SYNTHBOARD_SIGNER_SHA256 replaces the owner's certificate digest for another signer.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -40,8 +42,7 @@ exported=$(awk '/E: (activity|service|provider|receiver)/ { name = "" }
 [ "$exported" = "app.synthboard.SettingsActivity app.synthboard.SynthboardService " ] ||
     fail "unexpected exported components: $exported"
 
-"$tools/apksigner" verify --print-certs "$apk" > "$scratch/signer"
-grep -q "SHA-256 digest: 8f200e94eb4d58efd42eff171f440101203ab0ed4e1462410cfb7bef109fc7fc" "$scratch/signer" || fail "not signed with our key"
+signed_by_release_key "$apk" || fail "not signed with our key"
 
 unzip -q -o "$apk" 'lib/arm64-v8a/*' -d "$scratch"
 library="$scratch/lib/arm64-v8a/libsynthboard_ffi.so"
@@ -68,9 +69,17 @@ bin=$(dirname "$readelf")
 
 # Tracked, so that a change shows in a diff and the clean tree below covers it. These
 # are public facts. The archive is linked rather than packed, so its file is compared.
-for asset in assets/neural.bin assets/trace.pub; do
-    [ "$(unzip -p "$apk" "$asset" | digest)" = "$(expected "$asset")" ] || fail "$asset is not the expected file"
-done
+check_asset() {
+    [ "$(unzip -p "$apk" "$1" | digest)" = "$(expected "$1")" ] || fail "$1 is not the expected file"
+}
+check_asset assets/neural.bin
+trace_key=assets/trace.pub
+if [ "${1:-}" = public ]; then
+    # Without this key the engine traces nothing, so its absence is what a public build promises.
+    ! unzip -Z1 "$apk" | grep -qx "$trace_key" || fail "a public build carries $trace_key"
+else
+    check_asset "$trace_key"
+fi
 [ "$(digest < "$root/data/raw/ort/android/libonnxruntime.a")" = "$(expected libonnxruntime.a)" ] ||
     fail "libonnxruntime.a is not the expected file"
 

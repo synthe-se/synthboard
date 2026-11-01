@@ -42,9 +42,9 @@ The keyboard declares no permission and contains no network code. `tools/check-r
 
 | Key | Lives in | Lifetime |
 |---|---|---|
-| Trace secret | Encrypted volume | Rotated yearly: `trace_keys new`, then replace the `trace.pub` asset. Old secrets stay on the volume so that `tools/daily.sh` opens older records |
+| Trace secret | Encrypted volume | Rotated yearly: `trace_keys new`, then replace the `trace.pub` asset. Old secrets stay on the volume so that `tools/daily.sh` opens older records. A public build carries no `trace.pub`, so it traces nothing, and `tools/check-release.sh public` fails if the asset is there |
 | Memory keys | Secret under the Keystore key, public in app storage | Until Erase, which destroys the Keystore key. Flash keeps deleted files; a destroyed key makes them useless |
-| Signing key | Encrypted volume, plus one offline copy | Long-lived. Losing it costs an uninstall and the learned words |
+| Signing key | Encrypted volume, plus one offline copy | Long-lived. Losing it costs an uninstall and the learned words. The tools expect this certificate unless another signer sets `SYNTHBOARD_SIGNER_SHA256` and `SYNTHBOARD_SIGNING_DIR` |
 | Volume passphrase | The owner's head | Long-lived |
 
 ## Hardening

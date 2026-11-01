@@ -66,7 +66,7 @@ object Settings {
  * The only settings surface: the app icon, or the gear in Android's keyboard
  * settings. Nothing about settings appears on the keyboard itself.
  */
-class SettingsActivity : Activity() {
+open class SettingsActivity : Activity() {
     private val store by lazy { getSharedPreferences(Settings.FILE, Context.MODE_PRIVATE) }
     private lateinit var list: LinearLayout
 

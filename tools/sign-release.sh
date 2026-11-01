@@ -1,11 +1,13 @@
 #!/bin/sh
 # Signs the release with the key on the encrypted volume, which must be open.
+# Another signer sets SYNTHBOARD_SIGNING_DIR to a directory holding synthboard.jks and
+# its password file, and SYNTHBOARD_SIGNER_SHA256 to that certificate's digest.
 # Pass "new-key" once to make the key and the lineage from the old debug key, so
 # that the installed keyboard accepts the update and keeps its data.
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
-signing=/Volumes/SynthboardVault/signing
+signing=${SYNTHBOARD_SIGNING_DIR:-/Volumes/SynthboardVault/signing}
 store="$signing/synthboard.jks"
 pass="$signing/password"
 lineage="$signing/lineage"
@@ -26,6 +28,9 @@ if [ "${1:-}" = new-key ]; then
         --new-signer --ks "$store" --ks-pass "file:$pass" --ks-key-alias synthboard
 fi
 
+# A lineage only matters to a key that replaced an installed one.
+set --
+[ ! -e "$lineage" ] || set -- --lineage "$lineage"
 "$tools/apksigner" sign --ks "$store" --ks-pass "file:$pass" --ks-key-alias synthboard \
-    --lineage "$lineage" --v1-signing-enabled false --v2-signing-enabled false --out "$outputs/app-release.apk" "$outputs/app-release-unsigned.apk"
-"$tools/apksigner" verify "$outputs/app-release.apk"
+    "$@" --v1-signing-enabled false --v2-signing-enabled false --out "$outputs/app-release.apk" "$outputs/app-release-unsigned.apk"
+signed_by_release_key "$outputs/app-release.apk" || { echo "Signed, but not with the expected certificate."; exit 1; }
