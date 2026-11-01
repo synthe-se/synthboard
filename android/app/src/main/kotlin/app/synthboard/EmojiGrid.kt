@@ -13,6 +13,7 @@ import app.synthboard.core.EmojiItem
 import app.synthboard.core.Event
 import app.synthboard.core.Icon
 import app.synthboard.core.LETTERS_LABEL
+import app.synthboard.core.SKIN_TONES
 
 /**
  * The scrolling emoji panel inside the keyboard view. Long press relies on
@@ -104,6 +105,10 @@ class EmojiGrid(
         rebuild()
     }
 
+    fun setTone(chosen: Int) {
+        tone = chosen
+    }
+
     fun open(recent: List<String>, savedTone: Int) {
         recents = recent
         tone = savedTone
@@ -150,7 +155,7 @@ class EmojiGrid(
 
     /** The five skin tones come first in an item's variants, then its genders. */
     private fun shown(item: EmojiItem): String =
-        if (tone > 0 && item.tones.size >= SKIN_TONES) item.tones[tone - 1] else item.emoji
+        item.tones.takeIf { it.size >= SKIN_TONES }?.getOrNull(tone - 1) ?: item.emoji
 
     private fun cellAt(x: Float, y: Float): EmojiItem? {
         if (y < bar || y >= gridBottom()) return null
@@ -175,7 +180,7 @@ class EmojiGrid(
         when {
             slot == 0 -> send(Event.CloseEmojiPanel)
             slot >= stripSlots() - 1 -> send(Event.DeleteOne)
-            else -> jumpTo(groups[slot - 1].first)
+            else -> groups.getOrNull(slot - 1)?.let { jumpTo(it.first) }
         }
     }
 
@@ -206,11 +211,8 @@ class EmojiGrid(
                     invalidate()
                 }
                 MotionEvent.ACTION_UP -> {
-                    send(Event.Text(tonePopup[toneSelected]))
-                    if (toneSelected <= SKIN_TONES && tonePopup.size > SKIN_TONES) {
-                        tone = toneSelected
-                        onToneChosen(tone)
-                    }
+                    tonePopup.getOrNull(toneSelected)?.let { send(Event.Text(it)) }
+                    send(Event.ToneChosen(toneSelected.toUInt(), tonePopup.size.toUInt()))
                     tonePopup = emptyList()
                     invalidate()
                 }
@@ -223,8 +225,6 @@ class EmojiGrid(
         }
         return detector.onTouchEvent(event)
     }
-
-    var onToneChosen: (Int) -> Unit = {}
 
     fun draw(canvas: Canvas) {
         labelPaint.color = palette().text
@@ -289,8 +289,6 @@ class EmojiGrid(
     }
 
     private companion object {
-        const val SKIN_TONES = 5
-
         /** How far above the finger the skin tones open, in cells. */
         const val TONE_LIFT_CELLS = 1.5f
 

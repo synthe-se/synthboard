@@ -8,11 +8,11 @@ use synthswipe::{Candidate, best_first, fits_gesture, Mix, Neural, POOL, Reading
 use unicode_segmentation::UnicodeSegmentation;
 use zeroize::Zeroize;
 
-use crate::emoji::Catalog;
+use crate::emoji::{Catalog, SKIN_TONES};
 use crate::memory::Memory;
 use crate::predict::{NextWords, mail_domains};
 use crate::board::{Action, Alphabet, BAR_DP, Board, Layer, POPUP_HEIGHT_DP, Purpose, Screen, popup_of};
-use crate::wire::{Command, DrawnKey, Haptic, Icon};
+use crate::wire::{Command, DrawnKey, Haptic, Icon, ShiftLook};
 
 /// Android `InputType` and `EditorInfo` constants used for field rules.
 mod android {
@@ -287,6 +287,10 @@ crate::wire_enum! {
         Neural { deciding: bool },
         /// Whether the user records traces.
         Traces { on: bool },
+        /// A screen reader's finger lifted, which types the key under it.
+        HoverEnd { x: f32, y: f32, t: u64 },
+        /// A skin tone popup closed on this item, of this many.
+        ToneChosen { variant: u32, variants: u32 },
     }
 }
 
@@ -330,6 +334,9 @@ struct Typing {
     /// A new gesture then means another try, and replaces it.
     remnant: bool,
 }
+
+/// The pointer of a screen reader's finger, which is never a real touch.
+const HOVER_POINTER: i32 = 0;
 
 /// A word just learned, with all that learning it changed, so that erasing it
 /// leaves memory as it was. A trace it pushed out stays gone: traces age out anyway.
@@ -987,7 +994,12 @@ impl Engine {
                 }
             }
             Event::OpenEmojiSearch => self.open_search(),
-            Event::CloseEmojiPanel => self.search = None,
+            Event::CloseEmojiPanel => {
+                self.close_search();
+                self.out.push(Command::EmojiPanel { on: false, recents: Vec::new() });
+            }
+            Event::HoverEnd { x, y, t } => self.hover_ended(x, y, t),
+            Event::ToneChosen { variant, variants } => self.tone_chosen(variant, variants),
         }
         self.after_step()
     }
@@ -1039,9 +1051,9 @@ impl Engine {
 
     fn send_look(&mut self) {
         let shift = match self.shift {
-            Shift::Off => 0,
-            Shift::Auto | Shift::OneShot => 1,
-            Shift::Locked => 2,
+            Shift::Off => ShiftLook::Off,
+            Shift::Auto | Shift::OneShot => ShiftLook::On,
+            Shift::Locked => ShiftLook::Locked,
         };
         self.out.push(Command::Look { pressed: self.pressed, shift });
     }
@@ -1505,7 +1517,7 @@ impl Engine {
         if y < self.bar_height() {
             self.touch = Touch::Bar { x };
             if self.slot_word(x).is_some() {
-                self.deadline = Some(t + LONG_PRESS_MS);
+                self.deadline = Some(t.saturating_add(LONG_PRESS_MS));
             }
             return;
         }
@@ -1517,9 +1529,9 @@ impl Engine {
         self.press(i32::try_from(key).unwrap_or(-1));
         let action = self.key(key).map(|k| k.action.clone());
         self.deadline = match action {
-            Some(Action::Delete) => Some(t + DELETE_DELAY_MS),
-            Some(Action::Space | Action::Shift) => Some(t + MENU_PRESS_MS),
-            Some(Action::Text(_)) => Some(t + LONG_PRESS_MS),
+            Some(Action::Delete) => Some(t.saturating_add(DELETE_DELAY_MS)),
+            Some(Action::Space | Action::Shift) => Some(t.saturating_add(MENU_PRESS_MS)),
+            Some(Action::Text(_)) => Some(t.saturating_add(LONG_PRESS_MS)),
             _ => None,
         };
         let width = self.board.as_ref().map_or(1.0, |board| board.key_width);
@@ -1560,7 +1572,7 @@ impl Engine {
             }
             Touch::DeleteSwipe { anchor, words, base_cursor } => {
                 let travel = ((*anchor - x) - DELETE_SWIPE_DP * density).max(0.0);
-                let wanted = (travel / (DELETE_WORD_DP * density)) as u32 + 1;
+                let wanted = ((travel / (DELETE_WORD_DP * density)) as u32).saturating_add(1);
                 if wanted != *words {
                     *words = wanted;
                     let base = *base_cursor;
@@ -1767,7 +1779,7 @@ impl Engine {
                         self.delete_one();
                         self.out.push(Command::Vibrate { kind: Haptic::Step });
                         self.touch = Touch::Repeat { count: 1 };
-                        self.deadline = Some(t + DELETE_REPEAT_MS);
+                        self.deadline = Some(t.saturating_add(DELETE_REPEAT_MS));
                     }
                     Some(Action::Space) => {
                         self.out.push(Command::Vibrate { kind: Haptic::LongPress });
@@ -1795,13 +1807,13 @@ impl Engine {
                 let count = *count;
                 if count < DELETE_LETTERS {
                     self.delete_one();
-                    self.deadline = Some(t + DELETE_REPEAT_MS);
+                    self.deadline = Some(t.saturating_add(DELETE_REPEAT_MS));
                 } else {
                     self.delete_word();
-                    self.deadline = Some(t + DELETE_WORD_REPEAT_MS);
+                    self.deadline = Some(t.saturating_add(DELETE_WORD_REPEAT_MS));
                 }
                 self.out.push(Command::Vibrate { kind: Haptic::Step });
-                self.touch = Touch::Repeat { count: count + 1 };
+                self.touch = Touch::Repeat { count: count.saturating_add(1) };
             }
             Touch::ShiftDrag { .. } => {
                 self.out.push(Command::Vibrate { kind: Haptic::LongPress });
@@ -2129,7 +2141,7 @@ impl Engine {
         } else {
             return false;
         };
-        self.delete_units(utf16_len(&fix.written) + utf16_len(trailing));
+        self.delete_units(utf16_len(&fix.written).saturating_add(utf16_len(trailing)));
         self.insert_text(&fix.typed);
         self.insert_text(trailing);
         self.drop_pending();
@@ -2167,7 +2179,7 @@ impl Engine {
         if self.field.allows_reading() {
             self.before.push_str(text);
         }
-        self.cursor += utf16_len(text);
+        self.cursor = self.cursor.saturating_add(utf16_len(text));
         self.expect_selection();
     }
 
@@ -2353,9 +2365,9 @@ impl Engine {
             let trimmed = text.trim_end();
             let start = trimmed
                 .rfind(|c: char| c.is_whitespace() || c == '\'' || c == '’')
-                .map_or(0, |index| index + trimmed[index..].chars().next().map_or(1, char::len_utf8));
-            let start = if start == trimmed.len() { trimmed.len().saturating_sub(1) } else { start };
-            units += utf16_len(text.get(start..).unwrap_or(""));
+                .map_or(0, |index| index + trimmed.get(index..).and_then(|rest| rest.chars().next()).map_or(1, char::len_utf8));
+            let start = if start == trimmed.len() { trimmed.char_indices().next_back().map_or(0, |(index, _)| index) } else { start };
+            units = utf16_len(text.get(start..).unwrap_or("")).saturating_add(units);
             text = text.get(..start).unwrap_or("");
             remaining -= 1;
         }
@@ -2395,6 +2407,21 @@ impl Engine {
                 let command = Command::Announce { text, icon: icon_of(&found.action) };
                 self.out.push(command);
             }
+        }
+    }
+
+    /// Lifting a finger that was exploring types the key under it.
+    fn hover_ended(&mut self, x: f32, y: f32, t: u64) {
+        self.down(HOVER_POINTER, x, y, t);
+        if self.pointer == Some(HOVER_POINTER) {
+            self.lifted(x, y, t);
+        }
+    }
+
+    /// Only a skin tone stays: other variants, such as gender, are for one emoji.
+    fn tone_chosen(&mut self, variant: u32, variants: u32) {
+        if variant as usize <= SKIN_TONES && variants as usize > SKIN_TONES {
+            self.out.push(Command::SaveTone { tone: variant });
         }
     }
 
@@ -3343,6 +3370,92 @@ mod tests {
             Sample { x, y, t_ms: index * 40 }
         }).collect();
         assert_eq!(rig.engine.snapshot().unwrap().rank(&path), ["òu", "óu"]);
+    }
+
+    #[test]
+    fn the_last_millisecond_of_the_clock_crashes_nothing() {
+        let mut rig = plain_rig();
+        let (x, y) = rig.center("⌫");
+        let late = u64::MAX - 1;
+        let step = rig.send(Event::Down { pointer: 0, x, y, t: late });
+        assert_eq!(step.deadline, Some(u64::MAX));
+        let held = rig.send(Event::Deadline { t: u64::MAX });
+        assert_eq!(held.deadline, Some(u64::MAX));
+        rig.send(Event::Up { pointer: 0, x, y, t: u64::MAX });
+        rig.send(Event::Down { pointer: 0, x: 540.0, y: 10.0, t: u64::MAX });
+    }
+
+    #[test]
+    fn a_delete_drag_to_the_end_of_the_float_range_crashes_nothing() {
+        let mut rig = rig_with_text("une deux");
+        let (x, y) = rig.center("⌫");
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        rig.send(Event::Move { pointer: 0, x: x - 100.0, y, t: t + 1 });
+        rig.send(Event::Move { pointer: 0, x: f32::MIN, y, t: t + 2 });
+    }
+
+    #[test]
+    fn the_end_of_a_word_may_be_any_letter() {
+        let rig = rig_with_text("l’été’");
+        assert_eq!(rig.engine.word_boundaries(1), 1);
+        assert_eq!(rig.engine.word_boundaries(2), 4);
+    }
+
+    #[test]
+    fn closing_the_panel_from_inside_closes_it_for_the_shell() {
+        let mut rig = plain_rig();
+        let step = rig.send(Event::CloseEmojiPanel);
+        assert!(step.commands.contains(&Command::EmojiPanel { on: false, recents: Vec::new() }));
+    }
+
+    #[test]
+    fn a_screen_readers_lift_types_the_key() {
+        let mut rig = plain_rig();
+        let (x, y) = rig.center("a");
+        let t = rig.t + 700;
+        rig.send(Event::HoverEnd { x, y, t });
+        assert_eq!(rig.text, "a");
+        assert_eq!(rig.engine.pointer, None);
+        rig.send(Event::Down { pointer: 7, x: 540.0, y: 10.0, t: t + 900 });
+        rig.send(Event::HoverEnd { x: 0.0, y: 0.0, t: t + 910 });
+        assert_eq!(rig.engine.pointer, Some(7), "a real finger is left alone");
+    }
+
+    #[test]
+    fn only_a_skin_tone_is_remembered() {
+        let mut rig = plain_rig();
+        let saved = |rig: &mut Rig, variant, variants| {
+            rig.send(Event::ToneChosen { variant, variants }).commands.contains(&Command::SaveTone { tone: variant })
+        };
+        let all = SKIN_TONES as u32 + 1;
+        assert!(saved(&mut rig, 3, all));
+        assert!(saved(&mut rig, 0, all));
+        assert!(saved(&mut rig, SKIN_TONES as u32, all));
+        assert!(!saved(&mut rig, SKIN_TONES as u32 + 1, all + 1));
+        assert!(!saved(&mut rig, 1, SKIN_TONES as u32));
+    }
+
+    #[test]
+    fn the_shift_key_shows_its_three_states() {
+        let mut rig = plain_rig();
+        let shown = |step: Step| step.commands.iter().rev().find_map(|command| match command {
+            Command::Look { shift, .. } => Some(*shift),
+            _ => None,
+        });
+        rig.send(Event::Resize { width: 1080.0, screen_height: 2424.0, density: DENSITY });
+        let (x, y) = rig.center("⇧");
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        let on = rig.send(Event::Up { pointer: 0, x, y, t: t + 30 });
+        assert_eq!(shown(on), Some(ShiftLook::On));
+        rig.send(Event::Down { pointer: 0, x, y, t: t + 120 });
+        let locked = rig.send(Event::Up { pointer: 0, x, y, t: t + 150 });
+        assert_ne!(rig.engine.shift, Shift::OneShot);
+        let last = shown(locked).unwrap_or(ShiftLook::Locked);
+        assert_eq!(last, ShiftLook::Locked);
+        rig.tap("⇧");
+        assert_eq!(shown(rig.send(Event::Resize { width: 1080.0, screen_height: 2424.0, density: DENSITY })), Some(ShiftLook::Off));
     }
 
     #[test]

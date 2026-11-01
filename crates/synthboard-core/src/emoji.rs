@@ -4,6 +4,8 @@
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
+/// The skin tones of Unicode's emoji modifiers, which come first among an item's variants.
+pub const SKIN_TONES: usize = 5;
 /// Several rows of the search strip: more than anyone scrolls through.
 const MAX_RESULTS: usize = 32;
 

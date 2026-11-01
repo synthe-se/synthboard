@@ -25,7 +25,7 @@ crate::wire_enum! {
         /// Replaces the keys on screen, with the heights of the keyboard and its bar in pixels.
         Keys { height: f32, bar_height: f32, keys: Vec<DrawnKey> },
         /// Marks which key looks pressed, if any, and the shift look.
-        Look { pressed: i32, shift: u8 },
+        Look { pressed: i32, shift: ShiftLook },
         /// Shows an accent popup, or hides it when `items` is empty.
         Popup { x: f32, y: f32, item_width: f32, selected: i32, items: Vec<String> },
         /// Offers to forget a word, in a bubble over the bar.
@@ -50,6 +50,18 @@ crate::wire_enum! {
         SaveMemory,
         /// Stores the recent emoji for the next start.
         SaveRecents { items: Vec<String> },
+        /// Stores the skin tone chosen, for the panel and the next start.
+        SaveTone { tone: u32 },
+    }
+}
+
+crate::wire_enum! {
+    /// What the shift key shows.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ShiftLook {
+        Off,
+        On,
+        Locked,
     }
 }
 

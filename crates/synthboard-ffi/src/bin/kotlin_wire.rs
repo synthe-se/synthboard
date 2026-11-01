@@ -4,7 +4,7 @@
 use std::fmt::Write as _;
 
 use synthboard_core::codec::{Described, Shape, Slot, Variant};
-use synthboard_core::{Command, DrawnKey, EmojiGroup, EmojiItem, Event, Field, Haptic, Icon, LETTERS_LABEL, POPUP_HEIGHT_DP, SEARCH_CELLS, SLOT_CENTERS, Step};
+use synthboard_core::{Command, DrawnKey, EmojiGroup, EmojiItem, Event, Field, Haptic, Icon, LETTERS_LABEL, POPUP_HEIGHT_DP, SEARCH_CELLS, SKIN_TONES, SLOT_CENTERS, ShiftLook, Step};
 use synthboard_ffi::{Call, KEPT_BYTES, Reply};
 use synthboard_seal::KEY_BYTES;
 
@@ -176,6 +176,7 @@ fn main() -> std::io::Result<()> {
         &DrawnKey::SHAPE,
         &Icon::SHAPE,
         &Haptic::SHAPE,
+        &ShiftLook::SHAPE,
         &EmojiItem::SHAPE,
         &EmojiGroup::SHAPE,
         &Call::SHAPE,
@@ -187,6 +188,7 @@ fn main() -> std::io::Result<()> {
     let _ = writeln!(out, "val SLOT_CENTERS = listOf({left}f, {center}f, {right}f)");
     let _ = writeln!(out, "const val KEY_BYTES = {KEY_BYTES}");
     let _ = writeln!(out, "const val SEARCH_CELLS = {SEARCH_CELLS}");
+    let _ = writeln!(out, "const val SKIN_TONES = {SKIN_TONES}");
     let _ = writeln!(out, "const val LETTERS_LABEL = \"{LETTERS_LABEL}\"");
     let _ = writeln!(out, "const val POPUP_HEIGHT_DP = {POPUP_HEIGHT_DP}f");
     let _ = writeln!(out, "const val KEPT_BYTES = {KEPT_BYTES}");

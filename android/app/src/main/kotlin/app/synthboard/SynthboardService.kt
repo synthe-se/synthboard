@@ -138,7 +138,9 @@ class SynthboardService : InputMethodService() {
         }
         previewRunning = true
         Core.onPreview {
-            val word = keyboard.preview()
+            // Whatever happens here, the flag below must fall, or no preview runs again.
+            var word = ""
+            guarded { word = keyboard.preview() }
             handler.post {
                 previewRunning = false
                 guarded { view?.setPreview(word) }
@@ -163,7 +165,7 @@ class SynthboardService : InputMethodService() {
     }
 
     private fun writeFile(target: File, bytes: ByteArray) {
-        val temporary = File(filesDir, "${target.name}.tmp")
+        val temporary = File(filesDir, Settings.temporary(target.name))
         FileOutputStream(temporary).use { out ->
             out.write(bytes)
             // Without this a power cut can keep the rename and lose the bytes.
@@ -226,10 +228,6 @@ class SynthboardService : InputMethodService() {
         view = it
         it.onGestureMoved = ::requestPreview
         it.setEmoji(emoji)
-        it.onToneChosen = { chosen ->
-            tone = chosen
-            preferences().edit().putInt(Settings.TONE, chosen).apply()
-        }
     }
 
     override fun onEvaluateFullscreenMode(): Boolean = false
@@ -314,7 +312,7 @@ class SynthboardService : InputMethodService() {
                 view?.setKeys(command.height, command.barHeight, command.keys)
                 strip?.setHeight(command.barHeight.toInt())
             }
-            is Command.Look -> view?.setLook(command.pressed, command.shift.toInt())
+            is Command.Look -> view?.setLook(command.pressed, command.shift)
             is Command.Popup -> view?.setPopup(command)
             is Command.ForgetBubble -> view?.setForgetBubble(command)
             is Command.Suggestions -> view?.setSuggestions(command)
@@ -329,6 +327,11 @@ class SynthboardService : InputMethodService() {
             is Command.EmojiSearch -> view?.setSearch(command.on, command.query, command.results)
             is Command.SaveMemory -> saveMemory()
             is Command.Trace -> appendTrace(command.record)
+            is Command.SaveTone -> {
+                tone = command.tone.toInt()
+                view?.setTone(tone)
+                preferences().edit().putInt(Settings.TONE, tone).apply()
+            }
             is Command.SaveRecents ->
                 preferences().edit().putString(Settings.RECENTS, command.items.joinToString(" ")).apply()
             is Command.Announce -> view?.contentDescription = spoken(command)

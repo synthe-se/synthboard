@@ -20,6 +20,7 @@ import app.synthboard.core.Icon
 import app.synthboard.core.POPUP_HEIGHT_DP
 import app.synthboard.core.SEARCH_CELLS
 import app.synthboard.core.SLOT_CENTERS
+import app.synthboard.core.ShiftLook
 
 /** The corners of keys and of everything drawn like them. */
 internal const val KEY_RADIUS_DP = 8f
@@ -57,7 +58,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         context.getString(R.string.recents),
         context.getString(R.string.search),
         ::invalidate,
-        ::fromPanel,
+        send,
     )
 
     private var panelOpen = false
@@ -65,11 +66,6 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     private var undoOffered = false
     private var searchQuery = ""
     private var searchResults: List<String> = emptyList()
-    var onToneChosen: (Int) -> Unit
-        get() = emojiGrid.onToneChosen
-        set(value) {
-            emojiGrid.onToneChosen = value
-        }
 
     private var keys: List<DrawnKey> = emptyList()
     private var boardHeight = 0f
@@ -77,7 +73,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     private var knownWidth = 0
     private var bottomInset = 0
     private var pressed = -1
-    private var shiftLook = 0
+    private var shiftLook = ShiftLook.OFF
     private var popup: Command.Popup? = null
     private var suggestions = listOf("", "", "")
 
@@ -98,7 +94,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         invalidate()
     }
 
-    fun setLook(pressedKey: Int, shift: Int) {
+    fun setLook(pressedKey: Int, shift: ShiftLook) {
         pressed = pressedKey
         shiftLook = shift
         invalidate()
@@ -125,11 +121,6 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         invalidate()
     }
 
-    private fun fromPanel(event: Event) {
-        if (event is Event.CloseEmojiPanel) setPanel(false, emptyList(), 0)
-        send(event)
-    }
-
     /** The emoji arrive after the panel opened, so what is on screen must be redrawn. */
     fun setEmoji(groups: List<Pair<String, List<EmojiItem>>>) {
         emojiGrid.setGroups(groups)
@@ -139,6 +130,11 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     fun setPanel(on: Boolean, recents: List<String>, tone: Int) {
         panelOpen = on
         if (on) emojiGrid.open(recents, tone)
+        invalidate()
+    }
+
+    fun setTone(tone: Int) {
+        emojiGrid.setTone(tone)
         invalidate()
     }
 
@@ -209,6 +205,10 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     private fun searchRow() = if (searching) barHeight else 0f
 
     override fun onDraw(canvas: Canvas) {
+        guarded { drawBoard(canvas) }
+    }
+
+    private fun drawBoard(canvas: Canvas) {
         iconPaint.color = palette.text
         trailPaint.color = palette.accent
         canvas.drawColor(palette.background)
@@ -289,9 +289,9 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         val radius = if (key.isPill) rect.height() / 2 else KEY_RADIUS_DP * density
         canvas.drawRoundRect(rect, radius, radius, fill)
         if (key.icon != Icon.NONE) {
-            val solid = key.icon == Icon.SHIFT && shiftLook > 0
+            val solid = key.icon == Icon.SHIFT && shiftLook != ShiftLook.OFF
             Icons.draw(canvas, key.icon, rect.centerX(), rect.centerY(), ICON_DP * density, iconPaint, solid)
-            if (key.icon == Icon.SHIFT && shiftLook == 2) {
+            if (key.icon == Icon.SHIFT && shiftLook == ShiftLook.LOCKED) {
                 val half = ICON_DP * density * LOCK_BAR_SHARE
                 val y = rect.centerY() + ICON_DP * density * LOCK_BAR_DROP
                 iconPaint.style = Paint.Style.STROKE
@@ -366,13 +366,11 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
      */
     override fun onHoverEvent(event: MotionEvent): Boolean {
         if (panelOpen) return false
-        val y = event.y - searchRow()
-        val t = event.eventTime.toULong()
-        when (event.actionMasked) {
-            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> send(Event.Hover(event.x, y))
-            MotionEvent.ACTION_HOVER_EXIT -> {
-                send(Event.Down(0, event.x, y, t))
-                send(Event.Up(0, event.x, y, t))
+        guarded {
+            val y = event.y - searchRow()
+            when (event.actionMasked) {
+                MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> send(Event.Hover(event.x, y))
+                MotionEvent.ACTION_HOVER_EXIT -> send(Event.HoverEnd(event.x, y, event.eventTime.toULong()))
             }
         }
         return true
@@ -381,7 +379,13 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     override fun performClick(): Boolean = super.performClick()
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
-        if (panelOpen) return emojiGrid.onTouch(event)
+        guarded {
+            if (panelOpen) emojiGrid.onTouch(event) else touched(event)
+        }
+        return true
+    }
+
+    private fun touched(event: MotionEvent) {
         val index = event.actionIndex
         val id = event.getPointerId(index)
         val t = event.eventTime.toULong()
@@ -418,7 +422,6 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
             }
             MotionEvent.ACTION_CANCEL -> send(Event.Cancel)
         }
-        return true
     }
 
     private companion object {

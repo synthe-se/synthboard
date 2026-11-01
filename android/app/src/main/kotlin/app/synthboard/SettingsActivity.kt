@@ -51,9 +51,13 @@ object Settings {
 
     fun hasTraceKey(context: Context): Boolean = traceKey(context) != null
 
-    /** Every file holding something the keyboard learned or recorded. */
+    /** Where a file is written first, so that a cut leaves the old one whole. */
+    fun temporary(name: String) = "$name.tmp"
+
+    /** Every file holding something the keyboard learned or recorded, half-written ones too. */
     fun personalFiles(context: Context): List<File> =
-        listOf(MEMORY_FILE, "$MEMORY_FILE.tmp", MEMORY_SECRET_FILE, MEMORY_PUBLIC_FILE, DAMAGED_MEMORY_FILE, TraceProvider.FILE)
+        listOf(MEMORY_FILE, MEMORY_SECRET_FILE, MEMORY_PUBLIC_FILE, DAMAGED_MEMORY_FILE, TraceProvider.FILE)
+            .flatMap { listOf(it, temporary(it)) }
             .map { File(context.filesDir, it) }
 }
 

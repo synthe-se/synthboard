@@ -10,6 +10,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import app.synthboard.core.Command
 import app.synthboard.core.EmojiItem
 import app.synthboard.core.Event
+import app.synthboard.core.ShiftLook
 import com.github.takahirom.roborazzi.captureRoboImage
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -86,7 +87,7 @@ class KeyboardViewTest {
     fun suggestions_and_shift() {
         val keyboard = view()
         keyboard.setSuggestions(Command.Suggestions("bonjour", "bonsoir", "bonheur"))
-        keyboard.setLook(-1, 2)
+        keyboard.setLook(-1, ShiftLook.LOCKED)
         keyboard.snapshot("src/test/snapshots/suggestions.png")
     }
 
@@ -205,8 +206,7 @@ class KeyboardViewTest {
         keyboard.onHoverEvent(touch(MotionEvent.ACTION_HOVER_MOVE, 50f, 400f))
         keyboard.onHoverEvent(touch(MotionEvent.ACTION_HOVER_EXIT, 50f, 400f))
         assertTrue(sent[0] is Event.Hover)
-        assertTrue(sent[1] is Event.Down)
-        assertTrue(sent[2] is Event.Up)
+        assertTrue(sent[1] is Event.HoverEnd)
     }
 
     @Test

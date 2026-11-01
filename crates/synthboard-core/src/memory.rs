@@ -152,8 +152,9 @@ impl Memory {
 
     /// Records that `word` was validated after `previous`.
     pub fn learn(&mut self, previous: &str, word: &str, known: impl Fn(&str) -> bool) {
-        if self.words.len() + self.pair_total >= MAX_ENTRIES {
+        if self.is_full() {
             self.forget_rarest();
+            self.rebuild(&known);
         }
         let count = self.words.entry(word.to_owned()).or_default();
         *count = count.saturating_add(1);
@@ -341,13 +342,26 @@ impl Memory {
         self.pair_total = self.pairs.values().map(HashMap::len).sum();
     }
 
+    fn is_full(&self) -> bool {
+        self.words.len() + self.pair_total >= MAX_ENTRIES
+    }
+
+    /// Drops what was seen once, then, while that leaves memory full, what
+    /// was seen twice as often, so that `MAX_ENTRIES` holds however used it is.
     fn forget_rarest(&mut self) {
-        self.pairs.retain(|_, next| {
-            next.retain(|_, count| *count > 1);
-            !next.is_empty()
-        });
-        self.count_pairs();
-        self.words.retain(|_, count| *count > 1);
+        let mut uses = 1;
+        loop {
+            self.pairs.retain(|_, next| {
+                next.retain(|_, count| *count > uses);
+                !next.is_empty()
+            });
+            self.count_pairs();
+            self.words.retain(|_, count| *count > uses);
+            if !self.is_full() || uses == u32::MAX {
+                return;
+            }
+            uses = uses.saturating_mul(2);
+        }
     }
 
     /// The words learned that the lexicon lacks.
@@ -567,6 +581,28 @@ mod tests {
         }
         memory.learn("a", "b", |_| true);
         assert!(memory.words.len() + memory.pairs.len() < 10);
+    }
+
+    #[test]
+    fn a_memory_full_of_frequent_entries_still_makes_room() {
+        let mut memory = Memory::default();
+        for index in 0..MAX_ENTRIES {
+            memory.words.insert(format!("w{index}"), 5);
+        }
+        memory.learn("a", "b", |_| true);
+        assert!(memory.words.len() + memory.pair_total < MAX_ENTRIES);
+    }
+
+    #[test]
+    fn a_word_dropped_when_full_leaves_the_extra_words() {
+        let mut memory = Memory::default();
+        memory.learn("a", "zxcv", |_| false);
+        memory.learn("a", "zxcv", |_| false);
+        for index in 0..MAX_ENTRIES {
+            memory.words.insert(format!("w{index}"), 9);
+        }
+        memory.learn("a", "b", |_| false);
+        assert!(memory.extra_words().is_none_or(|words| !words.contains("zxcv")));
     }
 
     #[test]
