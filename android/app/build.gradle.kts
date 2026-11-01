@@ -55,6 +55,15 @@ dependencies {
     testImplementation("org.robolectric:robolectric:4.17")
 }
 
+// The NDK's tree for this host. It keeps the x86_64 name on Apple silicon, where it is universal.
+val ndkHostTag = System.getProperty("os.name").lowercase().let { os ->
+    when {
+        os.startsWith("mac") -> "darwin-x86_64"
+        os.startsWith("linux") -> "linux-x86_64"
+        else -> error("No NDK host tag for $os: the native build runs on macOS and Linux.")
+    }
+}
+
 val generated = layout.buildDirectory.dir("native")
 val repository = rootDir.parentFile
 
@@ -62,7 +71,7 @@ val nativeLibrary = tasks.register<Exec>("nativeLibrary") {
     description = "Builds the Rust library for the phone."
     workingDir = repository
     val toolchain = androidComponents.sdkComponents.sdkDirectory.get().asFile
-        .resolve("ndk/${android.ndkVersion}/toolchains/llvm/prebuilt/darwin-x86_64/bin")
+        .resolve("ndk/${android.ndkVersion}/toolchains/llvm/prebuilt/$ndkHostTag/bin")
     environment("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", toolchain.resolve("aarch64-linux-android$minimumSdk-clang").path)
     // A rebuilt standard library leaves out the helpers that outlined atomics and emulated
     // thread locals call, which the shipped one carries, so they come from the NDK runtime.

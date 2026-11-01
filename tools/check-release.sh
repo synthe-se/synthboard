@@ -9,14 +9,15 @@ outputs="$root/android/app/build/outputs/apk/release"
 apk="$outputs/app-release.apk"
 unsigned="$outputs/app-release-unsigned.apk"
 hashes="$root/tools/release-hashes.txt"
-sdk="$HOME/Library/Android/sdk"
-tools=$(ls -d "$sdk"/build-tools/* | tail -1)
-ndk=$(sed -n 's/^synthboard\.ndkVersion=//p' "$root/android/gradle.properties")
-readelf=$(ls "$sdk/ndk/$ndk"/toolchains/llvm/prebuilt/*/bin/llvm-readelf)
+. "$root/tools/android-env.sh"
+tools=$(android_build_tools)
+readelf=$(android_ndk_bin)/llvm-readelf
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 fail() { echo "FAIL: $1"; exit 1; }
 digest() { shasum -a 256 | cut -d ' ' -f 1; }
+# GNU `stat -f` means something else, so its `-c` is tried first and BSD's form is the fallback.
+modified() { stat -c %Y "$1" 2>/dev/null || stat -f %m "$1"; }
 expected() { awk -v name="$1" '$2 == name { print $1 }' "$hashes"; }
 # The packed library has no local names, so calls are counted rather than named.
 calls() { grep -v ">:$" "$scratch/code" | grep -c "<$1@plt>"; }
@@ -54,7 +55,7 @@ grep -q BIND_NOW "$scratch/dynamic" || fail "the library binds lazily"
 "$readelf" -n "$library" | grep -q "aarch64 feature: BTI" || fail "the library has no branch targets"
 "$(dirname "$readelf")/llvm-objdump" -d "$library" | grep -q paciasp || fail "the library signs no return address"
 ! grep GNU_STACK "$scratch/segments" | grep -q ' RWE ' || fail "the library's stack is executable"
-! strings "$library" | grep -qE '/Users/|/private/|claude-' || fail "the library names this machine's paths"
+! strings "$library" | grep -qE '/Users/|/home/|/private/|claude-' || fail "the library names this machine's paths"
 
 # `wipe.rs` only sees ONNX Runtime's blocks if every `free` in the library goes through it.
 bin=$(dirname "$readelf")
@@ -85,7 +86,7 @@ cargo vet --locked
 cargo audit -q
 [ -z "$(git status --porcelain)" ] || fail "the tree has uncommitted changes"
 # Signing touches the signed file at any later time, so the build is judged on what it wrote.
-[ "$(stat -f %m "$unsigned")" -ge "$(git log -1 --format=%ct)" ] || fail "the APK is older than HEAD"
+[ "$(modified "$unsigned")" -ge "$(git log -1 --format=%ct)" ] || fail "the APK is older than HEAD"
 contents() { unzip -v "$1" | awk '$8 ~ /\// && $8 !~ /^META-INF/ { print $7, $8 }' | sort; }
 [ "$(contents "$apk")" = "$(contents "$unsigned")" ] || fail "the signed APK is not this build"
 echo "Release checks passed."

@@ -9,7 +9,8 @@ signing=/Volumes/SynthboardVault/signing
 store="$signing/synthboard.jks"
 pass="$signing/password"
 lineage="$signing/lineage"
-tools=$(ls -d "$HOME"/Library/Android/sdk/build-tools/* | tail -1)
+. "$root/tools/android-env.sh"
+tools=$(android_build_tools)
 outputs="$root/android/app/build/outputs/apk/release"
 
 if [ "${1:-}" = new-key ]; then
