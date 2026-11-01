@@ -47,16 +47,10 @@ class SynthboardService : InputMethodService() {
     private var haptics = true
 
     private var readable = false
-    private val hasTraceKey by lazy { Settings.hasTraceKey(this) }
 
     private fun preferences(): SharedPreferences = getSharedPreferences(Settings.FILE, MODE_PRIVATE)
 
     private fun personalFile(name: String) = File(filesDir, name)
-
-    /** The sealed trace. It only exists in a build holding an owner's key. */
-    private fun traceFile(): File? = preferences()
-        .takeIf { hasTraceKey && it.getBoolean(Settings.TRACES, true) }
-        ?.let { File(filesDir, TraceProvider.FILE) }
 
     private fun readAsset(name: String): ByteArray = assets.open(name).use { it.readBytes() }
 
@@ -164,6 +158,7 @@ class SynthboardService : InputMethodService() {
         send(Event.Alphabet(saved.getBoolean(Settings.QWERTY, false)))
         send(Event.Screenshots(saved.getBoolean(Settings.SCREENSHOTS, false)))
         send(Event.Neural(saved.getBoolean(Settings.NEURAL, false)))
+        send(Event.Traces(saved.getBoolean(Settings.TRACES, true)))
     }
 
     private fun writeFile(target: File, bytes: ByteArray) {
@@ -185,7 +180,7 @@ class SynthboardService : InputMethodService() {
     }
 
     private fun appendTrace(record: String) {
-        val target = traceFile() ?: return
+        val target = File(filesDir, TraceProvider.FILE)
         Core.onIo {
             if (target.length() < TraceProvider.MAX_BYTES) target.appendText(record + "\n")
         }

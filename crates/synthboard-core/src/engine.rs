@@ -100,6 +100,8 @@ pub const SLOT_CENTERS: [f32; BAR_SLOTS] = [0.16, 0.5, 0.84];
 pub const BAR_SLOTS: usize = 3;
 /// What a screen reader says for a key of a field that must stay secret.
 const SECRET_KEY: &str = "•";
+/// What a wiped gesture holds.
+const BLANK_SAMPLE: Sample = Sample { x: 0.0, y: 0.0, t_ms: 0 };
 /// The mirrors' room, so that writing into them does not leave old copies behind.
 const MIRROR_BYTES: usize = 4096;
 /// How close a new gesture must be to a deleted one to be a second try, in key pitches.
@@ -281,6 +283,8 @@ crate::wire_enum! {
         Screenshots { allowed: bool },
         /// Whether the network takes part in choosing words, or only in the traces.
         Neural { deciding: bool },
+        /// Whether the user records traces.
+        Traces { on: bool },
     }
 }
 
@@ -325,12 +329,30 @@ struct Typing {
     remnant: bool,
 }
 
-/// A word just learned, with what it was learned after.
+/// A word just learned, with all that learning it changed, so that erasing it
+/// leaves memory as it was. A trace it pushed out stays gone: traces age out anyway.
 #[derive(Debug, Clone)]
 struct Learned {
     previous: String,
     history: Vec<String>,
     word: String,
+    /// The word was blocked until this use adopted it.
+    lifted_block: bool,
+    /// This use wrote a new form over `earlier_form`.
+    wrote_form: bool,
+    earlier_form: Option<String>,
+    /// The gestures filed for it by this use.
+    taught: Vec<Vec<[f32; 2]>>,
+}
+
+impl Learned {
+    fn wipe(&mut self) {
+        self.previous.zeroize();
+        self.history.zeroize();
+        self.word.zeroize();
+        self.earlier_form.zeroize();
+        self.taught.iter_mut().for_each(|shape| shape.fill([0.0; 2]));
+    }
 }
 
 /// How much of the saved memory is in RAM, which it leaves whenever the keyboard
@@ -359,6 +381,8 @@ struct Pending {
     imposed: bool,
     /// The gesture that failed before this word was written.
     failed_gesture: Option<Vec<Sample>>,
+    /// What the bar's corrections filed while this word waited.
+    taught: Vec<(String, Vec<[f32; 2]>)>,
 }
 
 /// A correction that one backspace can still undo (B-9).
@@ -421,6 +445,9 @@ pub struct Engine {
     retry: Option<Retry>,
     held: Held,
     screenshots: bool,
+    /// The user's switch for traces. Off until the shell says, so that nothing
+    /// is sealed, or read a second time, for a file that will not take it.
+    tracing: bool,
     neural: Option<Arc<Neural>>,
     neural_decides: bool,
     fresh: Vec<(String, Vec<[f32; 2]>)>,
@@ -617,7 +644,8 @@ impl Decoding {
             let leads = strength >= TRACE_LEADS || count >= TRACE_VOTES;
             words.insert(usize::from(!leads).min(words.len()), word);
         }
-        if let Some((word, _)) = self.fresh.iter().rev().find(|(_, shape)| signature_distance(shape, &gesture) <= RETRY_REACH) {
+        let fresh = self.fresh.iter().rev().find(|(word, shape)| !self.memory.is_blocked(word) && signature_distance(shape, &gesture) <= RETRY_REACH);
+        if let Some((word, _)) = fresh {
             words.retain(|known| !known.eq_ignore_ascii_case(word));
             words.insert(0, word.clone());
         }
@@ -692,6 +720,11 @@ fn ends_with_words(text: &str, words: &[Learned]) -> bool {
     true
 }
 
+/// Whether a capital stands after the first letter, which is the one a keyboard imposes.
+fn has_inner_capital(word: &str) -> bool {
+    word.chars().skip(1).any(char::is_uppercase)
+}
+
 fn attaches_to_word(text: &str) -> bool {
     matches!(text, "," | "." | ")" | "]" | "}")
 }
@@ -715,6 +748,7 @@ impl Engine {
             retry: None,
             held: Held::Nothing,
             screenshots: false,
+            tracing: false,
             neural: None,
             neural_decides: false,
             fresh: Vec::new(),
@@ -807,6 +841,13 @@ impl Engine {
             memory_key: self.memory_key,
             alphabet: self.alphabet,
             height_scale: self.height_scale,
+            neural: self.neural.clone(),
+            neural_decides: self.neural_decides,
+            tracing: self.tracing,
+            screenshots: self.screenshots,
+            // A panic must not open a secret field: its rules outlive the crash.
+            field: self.field,
+            layer: self.field.base_layer(),
             ..Self::new()
         };
         engine.step(Event::Resize { width: self.width, screen_height: self.screen_height, density: self.density });
@@ -841,6 +882,9 @@ impl Engine {
                 self.pending = None;
                 self.retry = None;
                 self.last_word = None;
+                self.wipe_learned();
+                self.wipe_fresh();
+                self.wipe_failed_gesture();
                 self.drop_undo();
                 self.recents.clear();
                 self.protected.clear();
@@ -853,6 +897,7 @@ impl Engine {
             Event::Hidden => self.hidden(),
             Event::Screenshots { allowed } => self.screenshots = allowed,
             Event::Neural { deciding } => self.neural_decides = deciding,
+            Event::Traces { on } => self.tracing = on,
             Event::Alphabet { qwerty } => {
                 let alphabet = if qwerty { Alphabet::Qwerty } else { Alphabet::Azerty };
                 if alphabet != self.alphabet {
@@ -980,12 +1025,16 @@ impl Engine {
 
     fn hidden(&mut self) {
         self.cancel();
-        self.finish_typing_literal();
+        // What backspace left of a word was never chosen, so closing keeps nothing of it.
+        if !self.typing.as_ref().is_some_and(|typing| typing.remnant) {
+            self.finish_typing_literal();
+        }
         self.confirm_pending();
         self.save_memory();
         self.release_memory();
-        self.forget_text();
+        // Before the wipe, which takes the query: the shell must hear the row closing.
         self.close_search();
+        self.forget_text();
         self.out.push(Command::EmojiPanel { on: false, recents: Vec::new() });
     }
 
@@ -1008,6 +1057,9 @@ impl Engine {
         if self.held == Held::Waiting {
             self.memory = Arc::new(memory);
             self.held = Held::Everything;
+            // Those uses went into the memory just replaced: taking them back
+            // from this one would remove counts they never added.
+            self.wipe_learned();
         }
     }
 
@@ -1045,28 +1097,51 @@ impl Engine {
             corrected.typed.zeroize();
             corrected.written.zeroize();
         }
-        if let Some(mut gesture) = self.failed_gesture.take() {
-            gesture.fill(Sample { x: 0.0, y: 0.0, t_ms: 0 });
-        }
+        self.wipe_failed_gesture();
         if let Some(mut retry) = self.retry.take() {
             retry.words.zeroize();
+            retry.gesture.fill([0.0; 2]);
         }
+        self.wipe_fresh();
+        self.wipe_learned();
+        self.tap_point = [0.0; 2];
+        self.drop_undo();
+        if let Some(mut typing) = self.typing.take() {
+            typing.text.zeroize();
+            typing.taps.fill([0.0; 2]);
+            typing.offered.zeroize();
+        }
+        if let Some(mut word) = self.last_word.take() {
+            word.text.zeroize();
+            word.alternatives.zeroize();
+            word.gesture.fill(BLANK_SAMPLE);
+        }
+        if let Some(mut pending) = self.pending.take() {
+            pending.written.zeroize();
+            pending.previous.zeroize();
+            pending.history.zeroize();
+            if let Some(gesture) = pending.failed_gesture.as_mut() {
+                gesture.fill(BLANK_SAMPLE);
+            }
+        }
+    }
+
+    fn wipe_fresh(&mut self) {
         for (word, shape) in &mut self.fresh {
             word.zeroize();
             shape.fill([0.0; 2]);
         }
         self.fresh.clear();
-        self.drop_undo();
-        if let Some(mut typing) = self.typing.take() {
-            typing.text.zeroize();
-        }
-        if let Some(mut word) = self.last_word.take() {
-            word.text.zeroize();
-            word.alternatives.zeroize();
-        }
-        if let Some(mut pending) = self.pending.take() {
-            pending.written.zeroize();
-            pending.history.zeroize();
+    }
+
+    fn wipe_learned(&mut self) {
+        self.learned.iter_mut().for_each(Learned::wipe);
+        self.learned.clear();
+    }
+
+    fn wipe_failed_gesture(&mut self) {
+        if let Some(mut gesture) = self.failed_gesture.take() {
+            gesture.fill(BLANK_SAMPLE);
         }
     }
 
@@ -1133,41 +1208,68 @@ impl Engine {
         self.retry = None;
         let word = kept.written.to_lowercase();
         let known = self.known();
+        let was_blocked = self.memory.is_blocked(&word);
         let memory = Arc::make_mut(&mut self.memory);
         memory.learn_after(&kept.history, &kept.previous, &word, known);
-        if self.field.allows_learning() {
-            if self.learned.len() >= UNLEARNABLE_WORDS {
-                self.learned.remove(0);
-            }
-            self.learned.push(Learned { previous: kept.previous.clone(), history: kept.history.clone(), word: word.clone() });
-        }
+        let lifted_block = was_blocked && !memory.is_blocked(&word);
         // A sentence start capitalises anything, so only inner capitals count there.
         let starts_sentence = kept.previous == SENTENCE_START;
-        if !kept.imposed && (!starts_sentence || kept.written.chars().skip(1).any(char::is_uppercase)) {
+        let wrote_form = !kept.imposed && (!starts_sentence || has_inner_capital(&kept.written));
+        let earlier_form = memory.saved_form(&word);
+        if wrote_form {
             memory.set_form(&kept.written);
         }
         self.memory_changed = true;
+        let mut taught: Vec<Vec<[f32; 2]>> =
+            kept.taught.into_iter().filter(|(chosen, _)| *chosen == word).map(|(_, shape)| shape).collect();
         if let Some(failed) = kept.failed_gesture.filter(|gesture| self.gesture_fits(&kept.written, gesture)) {
             self.trace(format!("F\t{}", kept.written));
-            self.teach(&kept.written, &failed);
+            taught.extend(self.teach(&kept.written, &failed));
+        }
+        if self.field.allows_learning() {
+            if self.learned.len() >= UNLEARNABLE_WORDS {
+                self.learned.remove(0).wipe();
+            }
+            self.learned.push(Learned { previous: kept.previous, history: kept.history, word, lifted_block, wrote_form, earlier_form, taught });
         }
     }
 
-    /// Files a gesture as the user's own trace for the word it really meant.
-    fn teach(&mut self, word: &str, gesture: &[Sample]) {
-        let Some(pitch) = self.board.as_ref().and_then(|b| b.layout.as_ref()).map(Layout::pitch) else {
-            return;
-        };
-        if self.field.allows_learning() && gesture.len() >= 2 {
-            if self.fresh.len() >= FRESH_CHOICES {
-                self.fresh.remove(0).0.zeroize();
-            }
-            self.fresh.push((word.to_lowercase(), signature(gesture, pitch)));
-            Arc::make_mut(&mut self.memory).add_trace(word, signature(gesture, pitch));
+    /// Files a gesture as the user's own trace for the word it really meant, and
+    /// gives back what was filed, to take it back if the word is erased.
+    fn teach(&mut self, word: &str, gesture: &[Sample]) -> Option<Vec<[f32; 2]>> {
+        let pitch = self.board.as_ref().and_then(|b| b.layout.as_ref()).map(Layout::pitch)?;
+        if !self.field.allows_learning() || gesture.len() < 2 {
+            return None;
+        }
+        let shape = signature(gesture, pitch);
+        if self.fresh.len() >= FRESH_CHOICES {
+            self.fresh.remove(0).0.zeroize();
+        }
+        self.fresh.push((word.to_lowercase(), shape.clone()));
+        Arc::make_mut(&mut self.memory).add_trace(word, shape.clone());
+        self.memory_changed = true;
+        // A chat app keeps the keyboard open for hours, so waiting for it
+        // to close would lose what the user just taught.
+        self.save_memory();
+        Some(shape)
+    }
+
+    /// Takes back gestures filed for a word that did not stay.
+    fn take_back_traces<'a>(&mut self, word: &str, shapes: impl IntoIterator<Item = &'a [[f32; 2]]>) {
+        for shape in shapes {
+            self.fresh.retain(|(fresh_word, fresh_shape)| fresh_word != word || fresh_shape != shape);
+            Arc::make_mut(&mut self.memory).remove_trace(word, shape);
             self.memory_changed = true;
-            // A chat app keeps the keyboard open for hours, so waiting for it
-            // to close would lose what the user just taught.
-            self.save_memory();
+        }
+    }
+
+    /// Drops the word waiting to be kept: it was rejected, and whatever the bar
+    /// taught for it goes too.
+    fn drop_pending(&mut self) {
+        if let Some(pending) = self.pending.take() {
+            for (word, shape) in &pending.taught {
+                self.take_back_traces(word, [shape.as_slice()]);
+            }
         }
     }
 
@@ -1199,14 +1301,14 @@ impl Engine {
         self.word_shift = Shift::Off;
         if self.field.allows_learning() {
             self.update_leaning(written);
-            self.pending = Some(Pending { previous, history, written: written.to_owned(), imposed, failed_gesture });
+            self.pending = Some(Pending { previous, history, written: written.to_owned(), imposed, failed_gesture, taught: Vec::new() });
         }
     }
 
     /// Whether the keyboard chose these capitals, so that they say nothing about
     /// the word. Only a real mix of cases survives automatic capitals.
     fn capitals_are_imposed(&self, written: &str) -> bool {
-        let mixed = written.chars().skip(1).any(char::is_uppercase) && written.chars().any(char::is_lowercase);
+        let mixed = has_inner_capital(written) && written.chars().any(char::is_lowercase);
         self.shift == Shift::Locked || self.word_shift == Shift::Locked || (self.word_shift == Shift::Auto && !mixed)
     }
 
@@ -1573,7 +1675,7 @@ impl Engine {
                 let key = *key;
                 match self.key(key).map(|k| k.action.clone()) {
                     Some(Action::Delete) => {
-                        self.pending = None;
+                        self.drop_pending();
                         self.delete_one();
                         self.out.push(Command::Vibrate { kind: Haptic::Step });
                         self.touch = Touch::Repeat { count: 1 };
@@ -1822,7 +1924,8 @@ impl Engine {
     /// Records a line, sealed before it leaves the engine, so that plain text
     /// never reaches the Android side. A field that forbids learning records nothing.
     fn trace(&mut self, mut line: String) {
-        if self.field.allows_learning()
+        if self.tracing
+            && self.field.allows_learning()
             && let Some(record) = self.sealed(&line)
         {
             self.out.push(Command::Trace { record });
@@ -1902,7 +2005,7 @@ impl Engine {
         let Some(typing) = self.typing.clone() else {
             return;
         };
-        let inner_capital = typing.text.chars().skip(1).any(char::is_uppercase);
+        let inner_capital = has_inner_capital(&typing.text);
         if !self.field.allows_suggestions()
             || !self.field.allows_auto_spacing()
             || inner_capital
@@ -1945,7 +2048,7 @@ impl Engine {
         self.delete_units(utf16_len(&fix.written) + utf16_len(trailing));
         self.insert_text(&fix.typed);
         self.insert_text(trailing);
-        self.pending = None;
+        self.drop_pending();
         if self.field.allows_learning() {
             let known = self.known();
             Arc::make_mut(&mut self.memory).keep(&fix.typed, known);
@@ -2037,7 +2140,7 @@ impl Engine {
             self.spacing = Spacing::None;
             return;
         }
-        self.pending = None;
+        self.drop_pending();
         if let Some(word) = self.last_word.take()
             && self.before.ends_with(&word.text) {
                 self.trace("D".to_owned());
@@ -2105,10 +2208,24 @@ impl Engine {
         if erased.is_empty() {
             return;
         }
+        self.take_back(erased);
+    }
+
+    /// Leaves memory as it was before these words.
+    fn take_back(&mut self, erased: Vec<Learned>) {
         let known = self.known();
-        let memory = Arc::make_mut(&mut self.memory);
-        for learned in &erased {
+        for mut learned in erased {
+            let memory = Arc::make_mut(&mut self.memory);
             memory.unlearn(&learned.history, &learned.previous, &learned.word, &known);
+            if learned.lifted_block {
+                memory.restore_block(&learned.word, &known);
+            }
+            if learned.wrote_form {
+                memory.restore_form(&learned.word, learned.earlier_form.take());
+            }
+            let taught = std::mem::take(&mut learned.taught);
+            self.take_back_traces(&learned.word, taught.iter().map(Vec::as_slice));
+            learned.wipe();
         }
         self.memory_changed = true;
     }
@@ -2263,7 +2380,7 @@ impl Engine {
     /// owner compares the two on real typing before trusting either. Empty when
     /// nothing would record it, which also saves running it.
     fn other_reading(&self, decoding: &Decoding, path: &[Sample]) -> String {
-        if self.neural.is_none() || self.trace_key.is_none() || !self.field.allows_learning() {
+        if self.neural.is_none() || !self.tracing || self.trace_key.is_none() || !self.field.allows_learning() {
             return String::new();
         }
         let neural = if self.neural_decides { None } else { self.neural.clone() };
@@ -2333,6 +2450,23 @@ impl Engine {
     fn forget(&mut self, word: &str) {
         let known = self.known();
         Arc::make_mut(&mut self.memory).forget(word, known);
+        let lower = word.to_lowercase();
+        self.fresh.retain_mut(|(fresh_word, shape)| {
+            let keeps = *fresh_word != lower;
+            if !keeps {
+                fresh_word.zeroize();
+                shape.fill([0.0; 2]);
+            }
+            keeps
+        });
+        // Erasing it later must not bring back what forgetting removed.
+        self.learned.retain_mut(|learned| {
+            let keeps = learned.word != lower;
+            if !keeps {
+                learned.wipe();
+            }
+            keeps
+        });
         self.memory_changed = true;
         self.save_memory();
         if let Some(last) = self.last_word.as_mut() {
@@ -2448,10 +2582,11 @@ impl Engine {
         let chosen = word.alternatives.remove(slot);
         self.trace(format!("C\t{chosen}"));
         let gesture = std::mem::take(&mut word.gesture);
-        self.teach(&chosen, &gesture);
+        let taught = self.teach(&chosen, &gesture);
         word.gesture = gesture;
         if let Some(pending) = self.pending.as_mut() {
             pending.written.clone_from(&chosen);
+            pending.taught.extend(taught.map(|shape| (chosen.to_lowercase(), shape)));
         }
         self.delete_units(utf16_len(&word.text));
         self.insert_text(&chosen);
@@ -2741,7 +2876,15 @@ mod tests {
 
     #[test]
     fn words_end_a_text_whatever_the_marks_around_them() {
-        let learned = |word: &str| Learned { previous: String::new(), history: Vec::new(), word: word.to_owned() };
+        let learned = |word: &str| Learned {
+            previous: String::new(),
+            history: Vec::new(),
+            word: word.to_owned(),
+            lifted_block: false,
+            wrote_form: false,
+            earlier_form: None,
+            taught: Vec::new(),
+        };
         assert!(ends_with_words("dit bonjour, ", &[learned("bonjour")]));
         assert!(ends_with_words("c'est l'été", &[learned("c'est"), learned("l'"), learned("été")]));
         assert!(!ends_with_words("dit bonjou", &[learned("bonjour")]));
@@ -3152,6 +3295,7 @@ mod tests {
         let (secret, public) = synthboard_seal::generate_keys().unwrap();
         let mut rig = Rig::new(field);
         rig.engine.set_trace_key(public);
+        rig.send(Event::Traces { on: true });
         (rig, secret)
     }
 
@@ -3289,9 +3433,7 @@ mod tests {
 
     #[test]
     fn the_trace_names_the_word_a_deleted_gesture_meant() {
-        let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
-        let (secret, public) = synthboard_seal::generate_keys().unwrap();
-        rig.engine.set_trace_key(public);
+        let (mut rig, secret) = traced_rig(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
         rig.swipe("bonjour");
         clear_word(&mut rig);
         type_word(&mut rig, "bjour");
@@ -4082,6 +4224,228 @@ mod tests {
         assert!((engine.height_scale - 1.1).abs() < f32::EPSILON);
         assert!(engine.affinities.is_some() && engine.grammar.is_some());
         assert!(engine.next_words.is_some() && engine.catalog.is_some());
+    }
+
+    #[test]
+    fn a_recovered_engine_keeps_the_network_and_the_switches() {
+        let mut rig = plain_rig();
+        with_network(&mut rig, true);
+        rig.send(Event::Neural { deciding: true });
+        rig.send(Event::Traces { on: true });
+        rig.send(Event::Screenshots { allowed: true });
+        let engine = rig.engine.recovered();
+        assert!(engine.neural.is_some());
+        assert!(engine.neural_decides);
+        assert!(engine.tracing);
+        assert!(engine.screenshots);
+    }
+
+    #[test]
+    fn a_panic_in_a_password_field_does_not_open_it() {
+        let password = Field { input_type: android::CLASS_TEXT | android::PASSWORD, ime_options: 0 };
+        let mut rig = Rig::new(password);
+        rig.engine = rig.engine.recovered();
+        assert_eq!(rig.engine.field, password);
+        rig.tap("a");
+        assert!(rig.engine.typing.is_none());
+        assert_eq!(rig.engine.before, "");
+        let (x, y) = rig.center("a");
+        assert!(rig.send(Event::Hover { x, y }).commands.contains(&Command::Announce { text: SECRET_KEY.to_owned(), icon: Icon::None }));
+        assert!(!rig.engine.can_gesture());
+    }
+
+    #[test]
+    fn a_recovered_engine_stays_on_the_keys_of_its_field() {
+        let mut rig = Rig::new(Field { input_type: android::CLASS_NUMBER, ime_options: 0 });
+        rig.engine = rig.engine.recovered();
+        assert_eq!(rig.engine.layer, Layer::Numbers);
+    }
+
+    #[test]
+    fn nothing_typed_stays_after_closing() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        rig.swipe("bonsoir");
+        rig.tap_at((540.0, 10.0));
+        rig.swipe("été");
+        type_word(&mut rig, "ou");
+        assert!(rig.engine.tap_point.iter().any(|value| value.abs() > 0.0));
+        rig.send(Event::Hidden);
+        assert_eq!(rig.engine.learned.len(), 0);
+        assert_eq!(rig.engine.fresh.len(), 0);
+        assert!(rig.engine.pending.is_none());
+        assert!(rig.engine.typing.is_none());
+        assert!(rig.engine.last_word.is_none());
+        assert!(rig.engine.retry.is_none());
+        assert!(rig.engine.failed_gesture.is_none());
+        assert_eq!(rig.engine.tap_point, [0.0; 2]);
+    }
+
+    #[test]
+    fn erasing_everything_leaves_no_session_word() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        rig.swipe("ou");
+        rig.tap_at((540.0, 10.0));
+        rig.swipe("bonsoir");
+        rig.swipe("bonjour");
+        rig.tap("⌫");
+        assert_ne!(rig.engine.learned.len(), 0);
+        assert_ne!(rig.engine.fresh.len(), 0);
+        assert!(rig.engine.failed_gesture.is_some());
+        rig.send(Event::ForgetAll);
+        assert_eq!(rig.engine.learned.len(), 0);
+        assert_eq!(rig.engine.fresh.len(), 0);
+        assert!(rig.engine.failed_gesture.is_none());
+    }
+
+    #[test]
+    fn a_forgotten_word_no_longer_leads_for_a_fresh_correction() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let gesture = rig.engine.last_word.as_ref().unwrap().gesture.clone();
+        rig.tap_at((540.0, 10.0));
+        let chosen = rig.text.clone();
+        rig.engine.forget(&chosen);
+        assert_eq!(rig.engine.fresh.len(), 0);
+        assert!(!rig.engine.snapshot().unwrap().rank(&gesture).contains(&chosen));
+    }
+
+    #[test]
+    fn rank_skips_a_blocked_fresh_word_even_if_it_is_still_held() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let gesture = rig.engine.last_word.as_ref().unwrap().gesture.clone();
+        rig.tap_at((540.0, 10.0));
+        let chosen = rig.text.clone();
+        Arc::make_mut(&mut rig.engine.memory).forget(&chosen, |_| true);
+        assert_ne!(rig.engine.fresh.len(), 0);
+        assert!(!rig.engine.snapshot().unwrap().rank(&gesture).contains(&chosen));
+    }
+
+    #[test]
+    fn taking_a_word_back_restores_its_form() {
+        let mut rig = plain_rig();
+        Arc::make_mut(&mut rig.engine.memory).set_form("GitHub");
+        rig.send(Event::Text { text: "voir ".to_owned() });
+        rig.engine.remember("voir".to_owned(), Vec::new(), "GITHUB");
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.memory.form("github"), "GITHUB");
+        let erased = rig.engine.learned.split_off(0);
+        rig.engine.take_back(erased);
+        assert_eq!(rig.engine.memory.form("github"), "GitHub");
+    }
+
+    #[test]
+    fn taking_a_word_back_removes_a_form_it_brought() {
+        let mut rig = plain_rig();
+        rig.engine.remember("voir".to_owned(), Vec::new(), "GitHub");
+        rig.engine.confirm_pending();
+        let erased = rig.engine.learned.split_off(0);
+        rig.engine.take_back(erased);
+        assert_eq!(rig.engine.memory.form("github"), "github");
+    }
+
+    #[test]
+    fn taking_a_word_back_blocks_it_again() {
+        let mut rig = plain_rig();
+        Arc::make_mut(&mut rig.engine.memory).forget("zxcv", |_| false);
+        for _ in 0..2 {
+            rig.engine.remember("voir".to_owned(), Vec::new(), "zxcv");
+            rig.engine.confirm_pending();
+        }
+        assert!(!rig.engine.memory.is_blocked("zxcv"));
+        let erased = rig.engine.learned.split_off(1);
+        rig.engine.take_back(erased);
+        assert!(rig.engine.memory.is_blocked("zxcv"));
+        assert!(rig.engine.memory.extra_words().is_none());
+    }
+
+    #[test]
+    fn taking_a_word_back_takes_back_the_gesture_it_taught() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        clear_word(&mut rig);
+        type_word(&mut rig, "bjour");
+        rig.tap_at(rig.space());
+        rig.engine.confirm_pending();
+        assert!(rig.engine.memory.to_text().contains('~'));
+        assert_eq!(rig.engine.fresh.len(), 1);
+        while !rig.text.is_empty() {
+            rig.tap("⌫");
+        }
+        assert!(!rig.engine.memory.to_text().contains('~'));
+        assert_eq!(rig.engine.fresh.len(), 0);
+    }
+
+    #[test]
+    fn a_rejected_pick_from_the_bar_teaches_nothing() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        rig.tap_at((540.0, 10.0));
+        assert!(rig.engine.memory.to_text().contains('~'));
+        rig.tap("⌫");
+        assert!(!rig.engine.memory.to_text().contains('~'));
+        assert_eq!(rig.engine.fresh.len(), 0);
+    }
+
+    #[test]
+    fn memory_arriving_late_is_not_charged_for_words_learned_before_it() {
+        let mut rig = plain_rig();
+        rig.send(Event::Hidden);
+        rig.send(Event::Shown { field: rig.engine.field, before: String::new(), after: String::new(), cursor: 0 });
+        rig.swipe("bonjour");
+        rig.swipe("bonsoir");
+        assert_eq!(rig.engine.learned.len(), 1);
+        rig.engine.load_memory("bonjour\t5\n<s>\tbonjour\t5\n");
+        assert_eq!(rig.engine.learned.len(), 0);
+        rig.send(Event::Selection { start: 7, end: 7 });
+        let before = rig.engine.memory.familiarity("bonjour");
+        rig.engine.unlearn_erased();
+        assert!((rig.engine.memory.familiarity("bonjour") - before).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn what_backspace_left_is_not_learned_on_closing() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        rig.tap("⌫");
+        assert!(rig.engine.typing.as_ref().is_some_and(|typing| typing.remnant));
+        let step = rig.send(Event::Hidden);
+        assert!(rig.saved(&step).is_none_or(|text| !text.contains("bonjou")));
+    }
+
+    #[test]
+    fn a_tapped_word_is_still_learned_on_closing() {
+        let mut rig = plain_rig();
+        type_word(&mut rig, "ou");
+        let step = rig.send(Event::Hidden);
+        assert!(rig.saved(&step).unwrap().contains("ou"));
+    }
+
+    #[test]
+    fn closing_during_a_search_closes_its_row() {
+        let mut rig = plain_rig();
+        rig.send(Event::OpenEmojiSearch);
+        let step = rig.send(Event::Hidden);
+        assert!(step.commands.contains(&Command::EmojiSearch { on: false, query: String::new(), results: Vec::new() }));
+    }
+
+    #[test]
+    fn traces_off_seals_nothing_and_skips_the_second_reading() {
+        let (mut rig, _) = traced_rig(TEXT_FIELD);
+        let runs = with_network(&mut rig, false);
+        rig.send(Event::Traces { on: false });
+        let step = rig.swipe_step("bonjour");
+        assert_eq!(traces(&step), Vec::<&str>::new());
+        assert_eq!(runs.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn traces_stay_off_until_the_shell_turns_them_on() {
+        let mut rig = Rig::new(TEXT_FIELD);
+        rig.engine.set_trace_key([3; KEY_BYTES]);
+        assert_eq!(traces(&rig.send(Event::Session { unix: 1 })), Vec::<&str>::new());
     }
 
     #[test]

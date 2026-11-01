@@ -224,6 +224,20 @@ impl Memory {
         }
     }
 
+    /// The form stored for a lowercase word, if any.
+    #[must_use]
+    pub fn saved_form(&self, word: &str) -> Option<String> {
+        self.forms.get(word).cloned()
+    }
+
+    /// Puts back what [`Self::saved_form`] gave.
+    pub fn restore_form(&mut self, word: &str, form: Option<String>) {
+        match form {
+            Some(form) => self.forms.insert(word.to_owned(), form),
+            None => self.forms.remove(word),
+        };
+    }
+
     /// How the user writes this word, or the word as given.
     #[must_use]
     pub fn form(&self, word: &str) -> String {
@@ -305,6 +319,12 @@ impl Memory {
         self.rebuild(known);
     }
 
+    /// Blocks a word again, when the use that adopted it is taken back.
+    pub fn restore_block(&mut self, word: &str, known: impl Fn(&str) -> bool) {
+        self.blocked.insert(word.to_owned());
+        self.rebuild(known);
+    }
+
     /// Whether the user asked to forget this word.
     #[must_use]
     pub fn is_blocked(&self, word: &str) -> bool {
@@ -348,6 +368,13 @@ impl Memory {
             self.traces.remove(0);
         }
         self.traces.push((word, points));
+    }
+
+    /// Removes the newest trace of a word with exactly these points.
+    pub fn remove_trace(&mut self, word: &str, points: &[[f32; 2]]) {
+        if let Some(index) = self.traces.iter().rposition(|(known, shape)| known == word && shape == points) {
+            self.traces.remove(index);
+        }
     }
 
     /// Words whose personal trace resembles this gesture, closest first. Each
