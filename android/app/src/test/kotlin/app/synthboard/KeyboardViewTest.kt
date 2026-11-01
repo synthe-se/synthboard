@@ -21,6 +21,14 @@ import org.robolectric.annotation.GraphicsMode
 
 private const val PORTRAIT = "w411dp-h923dp-port-xxhdpi"
 private const val LANDSCAPE = "w923dp-h411dp-land-xxhdpi"
+private const val PICTURE_WIDTH = 1233f
+private const val CURVE_POINTS = 4
+private const val CURVE_STEPS = 10
+
+// The centres of the keys of `bonjour` in the portrait picture.
+private val BONJOUR_KEYS = listOf(
+    740f to 612f, 1047f to 237f, 863f to 612f, 800f to 425f, 1047f to 237f, 800f to 237f, 430f to 237f,
+)
 
 /** Tests the shell alone: it must draw what it is told and report what it sees. */
 @RunWith(AndroidJUnit4::class)
@@ -82,6 +90,36 @@ class KeyboardViewTest {
     @Config(qualifiers = LANDSCAPE)
     @Test
     fun landscape_keyboard() = view().snapshot("src/test/snapshots/landscape.png")
+
+    /** The word `bonjour` drawn by a finger, for the repository's front page. */
+    private fun swipedHero(path: String) {
+        val keyboard = view()
+        val scale = keyboard.width / PICTURE_WIDTH
+        val keys = BONJOUR_KEYS.map { (x, y) -> x * scale to y * scale }
+        val ends = listOf(keys.first()) + keys + listOf(keys.last())
+        val points = ends.windowed(CURVE_POINTS).flatMap { (a, b, c, d) ->
+            (0 until CURVE_STEPS).map { step ->
+                val t = step.toFloat() / CURVE_STEPS
+                catmullRom(a.first, b.first, c.first, d.first, t) to catmullRom(a.second, b.second, c.second, d.second, t)
+            }
+        }
+        keyboard.setTrail(true)
+        val (startX, startY) = points.first()
+        keyboard.onTouchEvent(touch(MotionEvent.ACTION_DOWN, startX, startY))
+        points.drop(1).forEach { (x, y) -> keyboard.onTouchEvent(touch(MotionEvent.ACTION_MOVE, x, y)) }
+        keyboard.setPreview("Bonjour")
+        keyboard.snapshot(path)
+    }
+
+    private fun catmullRom(a: Float, b: Float, c: Float, d: Float, t: Float): Float =
+        0.5f * (2 * b + (c - a) * t + (2 * a - 5 * b + 4 * c - d) * t * t + (3 * b - a - 3 * c + d) * t * t * t)
+
+    @Test
+    fun swiped_word_light() = swipedHero("src/test/snapshots/swipe-light.png")
+
+    @Config(qualifiers = "w411dp-h923dp-port-night-xxhdpi")
+    @Test
+    fun swiped_word_dark() = swipedHero("src/test/snapshots/swipe-dark.png")
 
     @Test
     fun suggestions_and_shift() {
