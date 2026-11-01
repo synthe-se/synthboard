@@ -54,3 +54,32 @@ export SYNTHBOARD_SIGNER_SHA256=<your certificate's SHA-256 digest, lower case>
 ```
 
 `tools/release-hashes.txt` pins the owner's `neural.bin` and `libonnxruntime.a`, so a build with your own files needs your hashes there. `tools/check-release.sh` also needs [`cargo-audit`](https://github.com/rustsec/rustsec/tree/main/cargo-audit) and a clean tree.
+
+## Training the model
+
+`training/` holds two workspaces of their own: `train`, which trains and scores on [Burn](https://burn.dev/), and `quant`, which makes the file the keyboard reads. They read the public datasets of [`PROVENANCE.md`](PROVENANCE.md), which `synthswipe-bench` flattens first. FUTO's swipe datasets alone are enough, and that is the default. HeliBoard's are optional, and share-alike.
+
+**Weights trained on personal traces must never be published.** Personal traces stay out of this pipeline altogether: `neural-train` refuses a path through a `personal` directory, and nothing here reads one.
+
+```sh
+cargo run --release -p synthswipe-bench -- data/raw --export data/raw/neural
+
+cd training/train
+lexicon=../../android/app/src/main/assets/lexicon.csv
+cargo run --release -- train --data ../../data/raw/neural --lexicon $lexicon --out ../../data/raw/runs --name mine --epochs 8
+checkpoint=../../data/raw/runs/mine/ema.safetensors
+model=../../data/raw/neural-spike/model
+mkdir -p $model
+cargo run --release -- head $checkpoint $model
+cargo run --release -- export $checkpoint $model --data ../../data/raw/neural --lexicon $lexicon
+
+cd ../quant
+cargo run --release -- quant ../../data/raw/neural-spike/model encoder.float.onnx encoder.int8.onnx
+cargo run --release -- convert ../../data/raw/neural-spike/model encoder.int8.onnx encoder.int8.ort
+cd ../.. && ./tools/pack-neural.sh    # after `cargo build --release -p synthswipe-bench`
+```
+
+- `--features metal` trains on Apple's GPU. Without it, training runs on the CPU, which is far slower.
+- `--sources` lists what to train on, as exported file names or `futo-5-rest`, `futo-5-en` and `heliboard-half`. A name given twice weighs twice. Each set must be exported first.
+- `neural-quant run` and `neural-train evalq` score the int8 model. `neural-train eval` scores a checkpoint on the held-out parts, and `futo-test` stays unread.
+- `--features onnx` adds `prod`, which runs a packed `neural.bin` through the shipped decoder, and `hostile`, which feeds its loader damaged files. They need `ORT_LIB_PATH` set to the directory of the static ONNX Runtime.

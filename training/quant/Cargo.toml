@@ -1,0 +1,20 @@
+# Turns the exported float graph into the int8 ONNX Runtime file the keyboard packs. Never
+# shipped, and outside the root workspace. Its ONNX Runtime is the full prebuilt one, because
+# the phone's minimal build can neither read `.onnx` nor write `.ort`.
+[package]
+name = "neural-quant"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+ort = { version = "=2.0.0-rc.15" }
+ndarray = "0.17"
+prost = "=0.14.4"
+synthswipe = { path = "../../crates/synthswipe" }
+
+[build-dependencies]
+prost-build = "=0.14.4"
+protox = "=0.10.0"
