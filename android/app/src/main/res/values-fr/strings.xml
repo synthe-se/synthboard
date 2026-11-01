@@ -23,4 +23,5 @@
     <string name="key_enter">Entrée</string>
     <string name="key_emoji">Émojis</string>
     <string name="key_space">Espace</string>
+    <string name="undo">Annuler</string>
 </resources>

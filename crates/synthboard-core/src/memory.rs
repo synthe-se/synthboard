@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
-use synthswipe::{Lexicon, signature_distance};
+use synthswipe::{Lexicon, SENTENCE_START, signature_distance, tokens};
 
 /// Uses before a word missing from the lexicon becomes swipeable (B-10.6).
 const VALIDATIONS: u32 = 2;
@@ -15,6 +15,15 @@ const LEARNED_WEIGHT: f32 = 140.0;
 const MAX_ENTRIES: usize = 50_000;
 const SLOTS: usize = 3;
 const SEPARATOR: char = '\t';
+const FORM_MARK: char = '^';
+/// Words of context kept before a word, to learn whole phrasings.
+const MAX_CONTEXT: usize = 3;
+/// Words of context a phrasing needs to run on.
+const MIN_RUN_CONTEXT: usize = 2;
+/// Uses before a word extends an offered phrasing.
+const PHRASE_USES: u32 = 2;
+/// Words a phrasing may add after the first offered one.
+const MAX_PHRASE_EXTRA: usize = 3;
 const BLOCK_MARK: char = '!';
 const TRACE_MARK: char = '~';
 const MAX_TRACES: usize = 500;
@@ -22,11 +31,22 @@ const TRACES_PER_WORD: usize = 4;
 /// How close a gesture must be to a personal trace, in key pitches.
 const TRACE_REACH: f32 = 0.45;
 
+/// The last one to three words of a sentence, shortest first, as joined context.
+fn contexts(history: &[String]) -> Vec<String> {
+    (1..=MAX_CONTEXT.min(history.len()))
+        .filter_map(|length| history.get(history.len() - length..))
+        .map(|words| words.join(" "))
+        .collect()
+}
+
 /// Learned words and word pairs.
 #[derive(Debug, Clone, Default)]
 pub struct Memory {
     words: HashMap<String, u32>,
-    pairs: HashMap<(String, String), u32>,
+    /// What followed each context of one to three words, with its count.
+    pairs: HashMap<String, HashMap<String, u32>>,
+    /// Words the user writes with capitals, by their lowercase form.
+    forms: HashMap<String, String>,
     /// Words the user asked to forget, lexicon words included.
     blocked: HashSet<String>,
     /// The user's own gestures for words the decoder got wrong.
@@ -45,6 +65,8 @@ impl Memory {
                 [word] => {
                     if let Some(blocked) = word.strip_prefix(BLOCK_MARK) {
                         memory.blocked.insert(blocked.to_owned());
+                    } else if let Some(form) = word.strip_prefix(FORM_MARK) {
+                        memory.forms.insert(form.to_lowercase(), form.to_owned());
                     }
                 }
                 [marked, points] if marked.starts_with(TRACE_MARK) => {
@@ -64,7 +86,7 @@ impl Memory {
                 }
                 [first, second, count] => {
                     if let Ok(count) = count.parse() {
-                        memory.pairs.insert(((*first).to_owned(), (*second).to_owned()), count);
+                        memory.pairs.entry((*first).to_owned()).or_default().insert((*second).to_owned(), count);
                     }
                 }
                 _ => {}
@@ -81,11 +103,16 @@ impl Memory {
         for (word, count) in &self.words {
             let _ = writeln!(text, "{word}{SEPARATOR}{count}");
         }
-        for ((first, second), count) in &self.pairs {
-            let _ = writeln!(text, "{first}{SEPARATOR}{second}{SEPARATOR}{count}");
+        for (first, next) in &self.pairs {
+            for (second, count) in next {
+                let _ = writeln!(text, "{first}{SEPARATOR}{second}{SEPARATOR}{count}");
+            }
         }
         for word in &self.blocked {
             let _ = writeln!(text, "{BLOCK_MARK}{word}");
+        }
+        for form in self.forms.values() {
+            let _ = writeln!(text, "{FORM_MARK}{form}");
         }
         for (word, points) in &self.traces {
             let joined: Vec<String> = points.iter().map(|[x, y]| format!("{x:.2},{y:.2}")).collect();
@@ -107,17 +134,105 @@ impl Memory {
 
     /// Records that `word` was validated after `previous`.
     pub fn learn(&mut self, previous: &str, word: &str, known: impl Fn(&str) -> bool) {
-        if self.words.len() + self.pairs.len() >= MAX_ENTRIES {
+        if self.words.len() + self.pairs.values().map(HashMap::len).sum::<usize>() >= MAX_ENTRIES {
             self.forget_rarest();
         }
         let count = self.words.entry(word.to_owned()).or_default();
         *count += 1;
         let promoted = *count == VALIDATIONS;
-        *self.pairs.entry((previous.to_owned(), word.to_owned())).or_default() += 1;
+        self.bump(previous.to_owned(), word);
         if promoted {
             self.blocked.remove(word);
             self.rebuild(known);
         }
+    }
+
+    fn bump(&mut self, context: String, word: &str) {
+        *self.pairs.entry(context).or_default().entry(word.to_owned()).or_default() += 1;
+    }
+
+    /// Records `word` after every length of context in `history`, so that the
+    /// longest phrasing the user has really written can be recognised.
+    pub fn learn_after(&mut self, history: &[String], previous: &str, word: &str, known: impl Fn(&str) -> bool) {
+        self.learn(previous, word, known);
+        for context in contexts(history).into_iter().skip(1) {
+            self.bump(context, word);
+        }
+    }
+
+    /// Remembers how a word is written. Plain lowercase means it has no form.
+    pub fn set_form(&mut self, written: &str) {
+        let lower = written.to_lowercase();
+        if lower == written {
+            self.forms.remove(&lower);
+        } else {
+            self.forms.insert(lower, written.to_owned());
+        }
+    }
+
+    /// How the user writes this word, or the word as given.
+    #[must_use]
+    pub fn form(&self, word: &str) -> String {
+        self.forms.get(&word.to_lowercase()).cloned().unwrap_or_else(|| word.to_owned())
+    }
+
+    /// The strongest habit for `word`, longer contexts counting more.
+    #[must_use]
+    pub fn habit_after(&self, history: &[String], previous: &str, word: &str) -> f32 {
+        let longest = contexts(history)
+            .iter()
+            .zip(1_u8..)
+            .map(|(context, length)| f32::from(length) * self.habit(context, word))
+            .fold(0.0, f32::max);
+        longest.max(self.habit(previous, word))
+    }
+
+    /// The user's phrasings that follow `history`, longest context first. Each
+    /// runs on while the user has written its next word more than once.
+    #[must_use]
+    pub fn phrases(&self, history: &[String], previous: &str) -> Vec<String> {
+        let mut starts = contexts(history);
+        starts.reverse();
+        if starts.is_empty() {
+            starts.push(previous.to_owned());
+        }
+        let mut found: Vec<String> = Vec::new();
+        for context in starts {
+            for word in self.next_after(&context) {
+                if !found.iter().any(|known| known.split(' ').next() == Some(word.as_str())) {
+                    found.push(self.extend(&context, &word));
+                }
+            }
+        }
+        found.truncate(SLOTS);
+        found
+    }
+
+    fn extend(&self, context: &str, first: &str) -> String {
+        let mut recent: Vec<String> =
+            context.split(' ').filter(|token| *token != SENTENCE_START).map(str::to_owned).collect();
+        let mut phrase = self.form(first);
+        recent.extend(tokens(first));
+        for _ in 0..MAX_PHRASE_EXTRA {
+            // Two words of context at least, or a common word would run on forever.
+            let shortest = MIN_RUN_CONTEXT.min(recent.len());
+            let next = (shortest..=MAX_CONTEXT.min(recent.len())).rev().find_map(|length| {
+                let tail = recent.get(recent.len() - length..).unwrap_or_default().join(" ");
+                self.pairs
+                    .get(&tail)
+                    .into_iter()
+                    .flatten()
+                    .filter(|(_, count)| **count >= PHRASE_USES)
+                    .max_by(|a, b| a.1.cmp(b.1).then_with(|| b.0.cmp(a.0)))
+            });
+            let Some((word, _)) = next else {
+                break;
+            };
+            phrase.push(' ');
+            phrase.push_str(&self.form(word));
+            recent.extend(tokens(word));
+        }
+        phrase
     }
 
     /// Forgets a word: its habits go, and it is no longer offered until the
@@ -125,7 +240,11 @@ impl Memory {
     pub fn forget(&mut self, word: &str, known: impl Fn(&str) -> bool) {
         let word = word.to_lowercase();
         self.words.remove(&word);
-        self.pairs.retain(|(first, second), _| *first != word && *second != word);
+        self.forms.remove(&word);
+        self.pairs.retain(|context, next| {
+            next.remove(&word);
+            !next.is_empty() && !context.split(' ').any(|token| token == word)
+        });
         self.traces.retain(|(known, _)| *known != word);
         self.blocked.insert(word);
         self.rebuild(known);
@@ -138,7 +257,10 @@ impl Memory {
     }
 
     fn forget_rarest(&mut self) {
-        self.pairs.retain(|_, count| *count > 1);
+        self.pairs.retain(|_, next| {
+            next.retain(|_, count| *count > 1);
+            !next.is_empty()
+        });
         self.words.retain(|_, count| *count > 1);
     }
 
@@ -151,8 +273,8 @@ impl Memory {
     /// How strongly the user's habit favours `word` after `previous`, in nats.
     #[must_use]
     pub fn habit(&self, previous: &str, word: &str) -> f32 {
-        let pair = (previous.to_owned(), word.to_owned());
-        self.pairs.get(&pair).map_or(0.0, |&count| (1.0 + count as f32).ln())
+        let word = word.to_lowercase();
+        self.pairs.get(previous).and_then(|next| next.get(&word)).map_or(0.0, |&count| (1.0 + count as f32).ln())
     }
 
     /// Keeps a gesture as the user's own way of writing `word`.
@@ -200,12 +322,8 @@ impl Memory {
     /// The user's own next words after `previous`, most frequent first.
     #[must_use]
     pub fn next_after(&self, previous: &str) -> Vec<String> {
-        let mut found: Vec<(u32, &str)> = self
-            .pairs
-            .iter()
-            .filter(|((first, _), _)| first == previous)
-            .map(|((_, second), &count)| (count, second.as_str()))
-            .collect();
+        let mut found: Vec<(u32, &str)> =
+            self.pairs.get(previous).into_iter().flatten().map(|(word, &count)| (count, word.as_str())).collect();
         found.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
         found.into_iter().take(SLOTS).map(|(_, word)| word.to_owned()).collect()
     }
@@ -247,6 +365,128 @@ mod tests {
             memory.add_trace("mot", vec![[f32::from(offset), 0.0]]);
         }
         assert!(memory.traces.len() <= TRACES_PER_WORD);
+    }
+
+    fn words(text: &str) -> Vec<String> {
+        text.split(' ').map(str::to_owned).collect()
+    }
+
+    fn write(memory: &mut Memory, sentence: &str) {
+        let tokens = words(sentence);
+        for index in 0..tokens.len() {
+            let history = tokens[..index].to_vec();
+            let previous = history.last().cloned().unwrap_or_else(|| "<s>".to_owned());
+            memory.learn_after(&history, &previous, &tokens[index], |_| true);
+        }
+    }
+
+    #[test]
+    fn a_repeated_phrasing_is_offered_whole() {
+        let mut memory = Memory::default();
+        write(&mut memory, "je te tiens au courant");
+        write(&mut memory, "je te tiens au courant");
+        let offered = memory.phrases(&words("je te"), "te");
+        assert_eq!(offered.first().map(String::as_str), Some("tiens au courant"));
+    }
+
+    #[test]
+    fn a_phrasing_seen_once_offers_only_its_next_word() {
+        let mut memory = Memory::default();
+        write(&mut memory, "je te tiens au courant");
+        assert_eq!(memory.phrases(&words("je te"), "te"), ["tiens"]);
+    }
+
+    #[test]
+    fn the_longest_context_wins_over_a_common_word() {
+        let mut memory = Memory::default();
+        for _ in 0..5 {
+            write(&mut memory, "de la");
+        }
+        write(&mut memory, "je pense de toi");
+        write(&mut memory, "je pense de toi");
+        let offered = memory.phrases(&words("je pense de"), "de");
+        assert!(offered.first().is_some_and(|phrase| phrase.starts_with("toi")), "{offered:?}");
+        assert!(memory.habit_after(&words("je pense de"), "de", "toi") > memory.habit("de", "toi"));
+    }
+
+    #[test]
+    fn forms_survive_saving_and_lowercase_clears_them() {
+        let mut memory = Memory::default();
+        memory.set_form("GitHub");
+        assert_eq!(memory.form("github"), "GitHub");
+        let saved = Memory::parse(&memory.to_text(), |_| true);
+        assert_eq!(saved.form("GITHUB"), "GitHub");
+        memory.set_form("github");
+        assert_eq!(memory.form("github"), "github");
+    }
+
+    #[test]
+    fn forgetting_a_word_removes_the_phrasings_through_it() {
+        let mut memory = Memory::default();
+        write(&mut memory, "je te tiens");
+        memory.forget("te", |_| true);
+        assert_eq!(memory.phrases(&words("je"), "je"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn forgetting_a_word_spares_what_followed_other_contexts() {
+        let mut memory = Memory::default();
+        memory.learn("te", "voir", |_| true);
+        memory.learn("pour", "voir", |_| true);
+        memory.forget("te", |_| true);
+        assert_eq!(memory.habit("te", "voir"), 0.0);
+        assert!(memory.habit("pour", "voir") > 0.0);
+    }
+
+    #[test]
+    fn a_full_memory_drops_its_rarest_entries() {
+        let mut memory = Memory::default();
+        for index in 0..MAX_ENTRIES / 2 {
+            memory.words.insert(format!("w{index}"), 1);
+            memory.bump(format!("c{index}"), "x");
+        }
+        memory.learn("a", "b", |_| true);
+        assert!(memory.words.len() + memory.pairs.len() < 10);
+    }
+
+    #[test]
+    fn a_longer_context_counts_in_proportion() {
+        let mut memory = Memory::default();
+        write(&mut memory, "je te vois");
+        let expected = 2.0 * 2.0_f32.ln();
+        assert!((memory.habit_after(&words("je te"), "te", "vois") - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_capitalised_candidate_finds_its_habit() {
+        let mut memory = Memory::default();
+        memory.learn("voir", "francis", |_| true);
+        assert!(memory.habit("voir", "Francis") > 0.0);
+    }
+
+    #[test]
+    fn a_phrasing_runs_on_from_a_sentence_start_and_through_elisions() {
+        let mut memory = Memory::default();
+        let spoken = |memory: &mut Memory| {
+            memory.learn_after(&[], "<s>", "bonne", |_| true);
+            memory.learn_after(&words("bonne"), "bonne", "journée", |_| true);
+            memory.learn_after(&words("j'"), "j'", "ai", |_| true);
+            memory.learn_after(&words("j' ai"), "ai", "dit", |_| true);
+        };
+        spoken(&mut memory);
+        spoken(&mut memory);
+        assert_eq!(memory.phrases(&[], "<s>").first().map(String::as_str), Some("bonne journée"));
+        memory.learn_after(&words("tu"), "tu", "j'ai", |_| true);
+        assert_eq!(memory.phrases(&words("tu"), "tu").first().map(String::as_str), Some("j'ai dit"));
+    }
+
+    #[test]
+    fn a_phrasing_shows_the_forms_the_user_gave_its_words() {
+        let mut memory = Memory::default();
+        write(&mut memory, "sur github");
+        write(&mut memory, "sur github");
+        memory.set_form("GitHub");
+        assert_eq!(memory.phrases(&words("sur"), "sur"), ["GitHub"]);
     }
 
     #[test]

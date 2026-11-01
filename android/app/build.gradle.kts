@@ -38,6 +38,7 @@ android {
 }
 
 dependencies {
+    implementation("androidx.autofill:autofill:1.3.0")
     testImplementation("androidx.test:core:1.7.0")
     testImplementation("androidx.test.ext:junit:1.3.0")
     testImplementation("io.github.takahirom.roborazzi:roborazzi:1.77.0")

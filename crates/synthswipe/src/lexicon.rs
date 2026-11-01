@@ -3,6 +3,42 @@ use std::collections::HashMap;
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
+/// The listings of one word, whatever their case.
+#[derive(Debug, Default)]
+struct Merged {
+    lower: f32,
+    capital: Option<(f32, String)>,
+    languages: u8,
+}
+
+impl Merged {
+    fn add(&mut self, word: &str, weight: f32, languages: u8) {
+        self.languages |= languages;
+        if word.chars().any(char::is_uppercase) {
+            if self.capital.as_ref().is_none_or(|(best, _)| weight > *best) {
+                self.capital = Some((weight, word.to_owned()));
+            }
+        } else {
+            self.lower = self.lower.max(weight);
+        }
+    }
+
+    fn weight(&self) -> f32 {
+        self.capital.as_ref().map_or(self.lower, |(weight, _)| weight.max(self.lower))
+    }
+
+    fn surface(&self, lower: &str) -> String {
+        match &self.capital {
+            Some((weight, form))
+                if form.chars().nth(1).is_some() && (self.lower == 0.0 || *weight >= self.lower + CAPITAL_LEAD) =>
+            {
+                form.clone()
+            }
+            _ => lower.to_owned(),
+        }
+    }
+}
+
 /// One word of a lexicon, read from its compact storage.
 #[derive(Debug, Clone, Copy)]
 pub struct Entry<'lexicon> {
@@ -18,6 +54,8 @@ pub struct Entry<'lexicon> {
 
 const NO_NODE: u32 = 0;
 const APOSTROPHE: char = '\'';
+/// How much more a capitalised listing must weigh to become the written form.
+const CAPITAL_LEAD: f32 = 16.0;
 
 /// A trie node. Children are chained through `next_sibling`, and index 0 is
 /// the root, which is nobody's child, so 0 can mean "none".
@@ -104,15 +142,18 @@ impl Lexicon {
     /// repeated across languages keeps its best weight and all its languages.
     #[must_use]
     pub fn with_languages<'w>(words: impl IntoIterator<Item = (&'w str, f32, u8)>) -> Self {
-        let mut weights: HashMap<String, (f32, u8)> = HashMap::new();
+        // Word lists hold both `Paris` the city and `paris` the bets: the form
+        // used far more often is the one the word is written with.
+        let mut merged: HashMap<String, Merged> = HashMap::new();
         for (word, weight, languages) in words {
-            let best = weights.entry(word.to_lowercase()).or_insert((weight, 0));
-            best.0 = best.0.max(weight);
-            best.1 |= languages;
+            merged.entry(word.to_lowercase()).or_default().add(word, weight, languages);
         }
-        let mut folded: Vec<(Vec<char>, String, f32, u8)> = weights
+        let mut folded: Vec<(Vec<char>, String, f32, u8)> = merged
             .into_iter()
-            .map(|(surface, (weight, languages))| (fold(&surface), surface, weight, languages))
+            .map(|(lower, listed)| {
+                let surface = listed.surface(&lower);
+                (fold(&lower), surface, listed.weight(), listed.languages)
+            })
             .filter(|(keys, ..)| !keys.is_empty())
             .collect();
         let words = folded.len();
@@ -198,7 +239,7 @@ impl Lexicon {
                     .find(|child| Some(usize::from(child.letter)) == letter)
             });
         }
-        node.and_then(|node| self.entries_of(node).find(|entry| entry.surface == lower))
+        node.and_then(|node| self.entries_of(node).find(|entry| entry.surface.to_lowercase() == lower))
     }
 
     /// The range an array of ends gives to one item.
@@ -427,6 +468,34 @@ mod tests {
         assert!(surfaces.contains(&"été") && surfaces.contains(&"merge"));
         assert_eq!(lexicon.find("merge").map(|e| (e.weight, e.languages)), Some((113.0, 2)));
         assert!(lexicon.entry(4).is_none());
+    }
+
+    #[test]
+    fn a_name_keeps_its_capitals_unless_it_is_also_a_plain_word() {
+        let lexicon = Lexicon::new([
+            ("Francis", 100.0),
+            ("GitHub", 100.0),
+            ("Paris", 150.0),
+            ("paris", 100.0),
+            ("Pierre", 104.0),
+            ("pierre", 100.0),
+            ("M", 150.0),
+            ("m", 100.0),
+        ]);
+        let surface = |word| lexicon.find(word).map(|entry| entry.surface);
+        assert_eq!(surface("francis"), Some("Francis"));
+        assert_eq!(surface("GITHUB"), Some("GitHub"));
+        assert_eq!(surface("paris"), Some("Paris"));
+        assert_eq!(surface("Pierre"), Some("pierre"));
+        assert_eq!(surface("m"), Some("m"));
+    }
+
+    #[test]
+    fn the_heaviest_capitalised_form_wins_in_any_order() {
+        for words in [[("Github", 100.0), ("GitHub", 120.0)], [("GitHub", 120.0), ("Github", 100.0)]] {
+            let lexicon = Lexicon::new(words);
+            assert_eq!(lexicon.find("github").map(|entry| entry.surface), Some("GitHub"));
+        }
     }
 
     #[test]

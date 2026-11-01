@@ -65,8 +65,8 @@ fn run(gesture: &Gesture, params: &Params) -> Outcome {
     let keys = fold(&gesture.word);
     Outcome {
         in_lexicon: gesture.lexicon.contains(&gesture.word),
-        strict1: ranked.first().is_some_and(|c| c.surface == gesture.word),
-        strict3: ranked.iter().any(|c| c.surface == gesture.word),
+        strict1: ranked.first().is_some_and(|c| c.surface.to_lowercase() == gesture.word),
+        strict3: ranked.iter().any(|c| c.surface.to_lowercase() == gesture.word),
         folded1: ranked.first().is_some_and(|c| fold(c.surface) == keys),
         micros,
     }
@@ -206,7 +206,7 @@ fn run_personal(text: &str, params: &Params, gestures: &[Gesture]) {
                     continue;
                 }
                 total += 1;
-                if ranked.first().is_some_and(|c| c.surface == truth) {
+                if ranked.first().is_some_and(|c| c.surface.to_lowercase() == truth) {
                     hits += 1;
                 } else {
                     let got = ranked.first().map_or("", |c| c.surface);

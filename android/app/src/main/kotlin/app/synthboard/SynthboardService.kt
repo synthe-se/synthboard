@@ -7,6 +7,7 @@ import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.graphics.Paint
 import android.inputmethodservice.InputMethodService
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -14,9 +15,13 @@ import android.os.UserManager
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InlineSuggestionsRequest
+import android.view.inputmethod.InlineSuggestionsResponse
 import android.view.inputmethod.InputMethodManager
+import android.widget.FrameLayout
 import app.synthboard.core.Command
 import app.synthboard.core.EmojiItem
 import app.synthboard.core.Event
@@ -38,6 +43,7 @@ class SynthboardService : InputMethodService() {
     private var previewRunning = false
     private var previewStale = false
     private var view: KeyboardView? = null
+    private var strip: InlineStrip? = null
     private var emoji: List<Pair<String, List<EmojiItem>>> = emptyList()
     private var emojiLoading = false
     private var tone = 0
@@ -212,7 +218,25 @@ class SynthboardService : InputMethodService() {
         super.onDestroy()
     }
 
-    override fun onCreateInputView(): View = KeyboardView(this, ::send).also {
+    override fun onCreateInputView(): View {
+        val root = FrameLayout(this)
+        val height = ViewGroup.LayoutParams.WRAP_CONTENT
+        root.addView(keyboardView(), FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height))
+        val inline = InlineStrip(this)
+        root.addView(inline, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height))
+        strip = inline
+        return root
+    }
+
+    override fun onCreateInlineSuggestionsRequest(uiExtras: Bundle): InlineSuggestionsRequest =
+        InlineStrip.request(this)
+
+    override fun onInlineSuggestionsResponse(response: InlineSuggestionsResponse): Boolean {
+        guarded { strip?.inflate(response.inlineSuggestions) }
+        return true
+    }
+
+    private fun keyboardView() = KeyboardView(this, ::send).also {
         view = it
         it.onGestureMoved = ::requestPreview
         it.setEmoji(emoji)
@@ -245,6 +269,7 @@ class SynthboardService : InputMethodService() {
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
+        strip?.clear()
         send(Event.Hidden)
         super.onFinishInputView(finishingInput)
     }
@@ -290,16 +315,21 @@ class SynthboardService : InputMethodService() {
             is Command.Enter -> enter()
             is Command.Picker -> getSystemService(InputMethodManager::class.java).showInputMethodPicker()
             is Command.Vibrate -> vibrate(command.kind)
-            is Command.Keys -> view?.setKeys(command.height, command.barHeight, command.keys)
+            is Command.Keys -> {
+                view?.setKeys(command.height, command.barHeight, command.keys)
+                strip?.setHeight(command.barHeight.toInt())
+            }
             is Command.Look -> view?.setLook(command.pressed, command.shift.toInt())
             is Command.Popup -> view?.setPopup(command)
             is Command.ForgetBubble -> view?.setForgetBubble(command)
             is Command.Suggestions -> view?.setSuggestions(command)
+            is Command.UndoBar -> view?.setUndo(command.offered)
             is Command.RequestContext -> Unit
             is Command.Trail -> view?.setTrail(command.on)
             is Command.EmojiPanel -> {
                 if (command.on) loadEmoji()
                 view?.setPanel(command.on, command.recents, tone)
+                strip?.setCovered(command.on)
             }
             is Command.EmojiSearch -> view?.setSearch(command.on, command.query, command.results)
             is Command.SaveMemory -> saveMemory(command.text)

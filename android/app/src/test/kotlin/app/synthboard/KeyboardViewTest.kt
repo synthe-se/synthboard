@@ -81,6 +81,13 @@ class KeyboardViewTest {
     }
 
     @Test
+    fun undo_bar() {
+        val keyboard = view()
+        keyboard.setUndo(true)
+        keyboard.snapshot("src/test/snapshots/undo-bar.png")
+    }
+
+    @Test
     fun accent_popup() {
         val keyboard = view()
         keyboard.setPopup(Command.Popup(100f, 60f, 115f, 1, listOf("é", "è", "ê", "ë", "€")))

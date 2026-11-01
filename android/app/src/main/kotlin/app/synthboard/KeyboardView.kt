@@ -50,6 +50,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
 
     private var panelOpen = false
     private var searching = false
+    private var undoOffered = false
     private var searchQuery = ""
     private var searchResults: List<String> = emptyList()
     var onToneChosen: (Int) -> Unit
@@ -99,6 +100,11 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     fun setForgetBubble(command: Command.ForgetBubble) {
         val label = context.getString(R.string.forget, command.word)
         popup = Command.Popup(command.x, 0f, command.width, 0, listOf(label))
+        invalidate()
+    }
+
+    fun setUndo(offered: Boolean) {
+        undoOffered = offered
         invalidate()
     }
 
@@ -206,13 +212,24 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         text.textSize = SUGGESTION_SP * density
         text.color = palette.text
         val baseline = barHeight / 2 - (text.descent() + text.ascent()) / 2
+        if (undoOffered) {
+            canvas.drawText(context.getString(R.string.undo), width * 0.5f, baseline, text)
+            return
+        }
         if (trailActive) {
             // The word forming under the finger takes the bar's centre.
             canvas.drawText(preview, width * 0.5f, baseline, text)
             return
         }
         val slots = listOf(width * 0.16f, width * 0.5f, width * 0.84f)
-        suggestions.zip(slots).forEach { (word, x) -> canvas.drawText(word, x, baseline, text) }
+        val room = width * SLOT_SHARE
+        suggestions.zip(slots).forEach { (word, x) ->
+            // A whole phrasing narrows to its slot rather than run into the next one.
+            text.textScaleX = 1f
+            text.textScaleX = minOf(1f, room / text.measureText(word).coerceAtLeast(1f))
+            canvas.drawText(word, x, baseline, text)
+        }
+        text.textScaleX = 1f
     }
 
     /** The light query input: magnifier, typed text, caret and clear cross. */
@@ -402,6 +419,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         const val HINT_INSET_DP = 6f
         const val FUNCTION_SP = 16f
         const val SUGGESTION_SP = 16f
+        const val SLOT_SHARE = 0.3f
         const val POPUP_HEIGHT_DP = 52.8f
         const val TRAIL_DP = 8f
         const val TRAIL_ALPHA = 216

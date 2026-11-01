@@ -29,6 +29,8 @@ pub enum Command {
     Popup { x: f32, y: f32, item_width: f32, selected: i32, items: Vec<String> },
     /// Offers to forget a word, in a bubble over the bar.
     ForgetBubble { x: f32, width: f32, word: String },
+    /// Offers to restore deleted text in the bar, or withdraws the offer.
+    UndoBar { offered: bool },
     /// Fills the three suggestion slots: centre, left, right.
     Suggestions { center: String, left: String, right: String },
     /// Asks for the text before the cursor, answered by `Event::Context`.

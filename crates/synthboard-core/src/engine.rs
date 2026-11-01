@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use boltffi::data;
-use synthswipe::{Affinities, Grammar, Layout, Lexicon, Params, signature, SENTENCE_START, Sample, correct, decode_in_context, tokens};
+use synthswipe::{Affinities, Grammar, Layout, Lexicon, Params, signature, signature_distance, SENTENCE_START, Sample, correct, decode_in_context, tokens};
 use unicode_segmentation::UnicodeSegmentation;
 use zeroize::Zeroize;
 
@@ -23,6 +23,7 @@ mod android {
     pub const CLASS_DATETIME: u32 = 4;
     pub const VARIATION_MASK: u32 = 0xff0;
     pub const PASSWORD: u32 = 0x80;
+    pub const NUMBER_PASSWORD: u32 = 0x10;
     pub const VISIBLE_PASSWORD: u32 = 0x90;
     pub const WEB_PASSWORD: u32 = 0xe0;
     pub const URI: u32 = 0x10;
@@ -68,6 +69,8 @@ const TRACE_LEADS: f32 = 0.35;
 /// Matching traces that make a word lead however loose they are: the user has
 /// chosen it twice for this gesture, and that decides.
 const TRACE_VOTES: u32 = 2;
+/// How close a new gesture must be to a deleted one to be a second try, in key pitches.
+const RETRY_REACH: f32 = 0.6;
 const FRENCH: u8 = 1;
 const ENGLISH: u8 = 2;
 /// Evidence kept from one word to the next.
@@ -132,11 +135,14 @@ impl Field {
     }
 
     fn is_password(self) -> bool {
-        self.is_text()
+        let text_secret = self.is_text()
             && matches!(
                 self.variation(),
                 android::PASSWORD | android::VISIBLE_PASSWORD | android::WEB_PASSWORD
-            )
+            );
+        let number_secret = self.input_type & android::CLASS_MASK == android::CLASS_NUMBER
+            && self.variation() == android::NUMBER_PASSWORD;
+        text_secret || number_secret
     }
 
     fn is_address(self) -> bool {
@@ -254,6 +260,25 @@ struct Typing {
     offered: Vec<String>,
 }
 
+/// The words deleted after a gesture, and that gesture.
+#[derive(Debug, Clone)]
+struct Retry {
+    words: Vec<String>,
+    gesture: Vec<[f32; 2]>,
+}
+
+/// A word waiting to be kept: it counts once the next one begins.
+#[derive(Debug, Clone)]
+struct Pending {
+    previous: String,
+    history: Vec<String>,
+    written: String,
+    /// Caps lock says nothing about how a word is spelled.
+    locked: bool,
+    /// The gesture that failed before this word was written.
+    failed_gesture: Option<Vec<Sample>>,
+}
+
 /// A correction that one backspace can still undo (B-9).
 #[derive(Debug, Clone)]
 struct Corrected {
@@ -305,7 +330,9 @@ pub struct Engine {
     /// time the keyboard opens or the field empties, and never stored.
     leaning: f32,
     /// The last word and the word before it, learned once the next one starts.
-    pending: Option<(String, String)>,
+    pending: Option<Pending>,
+    retry: Option<Retry>,
+    undo: Option<String>,
     memory_changed: bool,
     typing: Option<Typing>,
     corrected: Option<Corrected>,
@@ -430,6 +457,7 @@ pub struct Decoding {
     history: Vec<String>,
     leaning: f32,
     shift: Shift,
+    retry: Option<Retry>,
 }
 
 impl Decoding {
@@ -438,7 +466,7 @@ impl Decoding {
     fn score(&self, previous: &str, history: &[String], word: &str) -> f32 {
         let table = self.affinities.as_ref().map_or(0.0, |table| table.score(previous, word));
         let agreement = self.grammar.as_ref().map_or(0.0, |grammar| GRAMMAR_WEIGHT * grammar.score(history, word));
-        let habit = HABIT_WEIGHT * self.memory.habit(previous, word)
+        let habit = HABIT_WEIGHT * self.memory.habit_after(history, previous, word)
             + FAMILIAR_WEIGHT * self.memory.familiarity(word);
         table + agreement + habit + language_tilt(self.lexicon.languages(word), self.leaning)
     }
@@ -450,12 +478,13 @@ impl Decoding {
     fn rank(&self, path: &[Sample]) -> Vec<String> {
         let context = |word: &str| self.context(word);
         let extra = self.memory.extra_words();
+        let wanted = SUGGESTIONS + self.retry.as_ref().map_or(0, |retry| retry.words.len());
         let mut ranked =
-            decode_in_context(&self.layout, &self.lexicon, path, &self.params, SUGGESTIONS, context).unwrap_or_default();
+            decode_in_context(&self.layout, &self.lexicon, path, &self.params, wanted, context).unwrap_or_default();
         if let Some(extra) = &extra {
-            ranked.extend(decode_in_context(&self.layout, extra, path, &self.params, SUGGESTIONS, context).unwrap_or_default());
+            ranked.extend(decode_in_context(&self.layout, extra, path, &self.params, wanted, context).unwrap_or_default());
             ranked.sort_by(|a, b| b.score.total_cmp(&a.score).then_with(|| a.surface.cmp(b.surface)));
-            ranked.truncate(SUGGESTIONS);
+            ranked.truncate(wanted);
         }
         let mut words: Vec<String> = ranked
             .iter()
@@ -470,6 +499,10 @@ impl Decoding {
             let leads = strength >= TRACE_LEADS || count >= TRACE_VOTES;
             words.insert(usize::from(!leads).min(words.len()), word);
         }
+        // A second try at a deleted gesture must not give the same word again.
+        if let Some(retry) = self.retry.as_ref().filter(|r| signature_distance(&r.gesture, &gesture) <= RETRY_REACH) {
+            words.sort_by_key(|word| retry.words.contains(&word.to_lowercase()));
+        }
         words.truncate(SUGGESTIONS);
         words
     }
@@ -477,7 +510,9 @@ impl Decoding {
     /// The word this gesture would give so far, in the case it would be written.
     #[must_use]
     pub fn preview(&self, path: &[Sample]) -> String {
-        self.rank(path).first().map_or_else(String::new, |word| cased(self.shift, word))
+        self.rank(path)
+            .first()
+            .map_or_else(String::new, |word| cased(self.shift, &self.memory.form(word)))
     }
 }
 
@@ -519,6 +554,8 @@ impl Engine {
             memory: Arc::new(Memory::default()),
             leaning: LANGUAGE_START,
             pending: None,
+            retry: None,
+            undo: None,
             memory_changed: false,
             typing: None,
             corrected: None,
@@ -755,6 +792,11 @@ impl Engine {
         self.predictions.clear();
         self.corrected = None;
         self.failed_gesture = None;
+        if let Some(retry) = self.retry.as_mut() {
+            retry.words.zeroize();
+        }
+        self.retry = None;
+        self.drop_undo();
         self.typing = None;
         self.last_word = None;
     }
@@ -801,6 +843,13 @@ impl Engine {
         tokens(&tail).pop().unwrap_or_else(|| SENTENCE_START.to_owned())
     }
 
+    /// Asks the shell for the text around the cursor. A secret field is never read.
+    fn request_context(&mut self) {
+        if self.field.allows_reading() {
+            self.out.push(Command::RequestContext);
+        }
+    }
+
     /// Asks whether the lexicon has a word, independently of the engine.
     fn known(&self) -> impl Fn(&str) -> bool + use<> {
         let lexicon = self.lexicon.clone();
@@ -809,12 +858,24 @@ impl Engine {
 
     /// Learns the waiting word, now that it was kept.
     fn confirm_pending(&mut self) {
-        let Some((previous, word)) = self.pending.take() else {
+        let Some(kept) = self.pending.take() else {
             return;
         };
+        self.retry = None;
+        let word = kept.written.to_lowercase();
         let known = self.known();
-        Arc::make_mut(&mut self.memory).learn(&previous, &word, known);
+        let memory = Arc::make_mut(&mut self.memory);
+        memory.learn_after(&kept.history, &kept.previous, &word, known);
+        // A sentence start capitalises anything, so only inner capitals count there.
+        let starts_sentence = kept.previous == SENTENCE_START;
+        if !kept.locked && (!starts_sentence || kept.written.chars().skip(1).any(char::is_uppercase)) {
+            memory.set_form(&kept.written);
+        }
         self.memory_changed = true;
+        if let Some(failed) = kept.failed_gesture {
+            self.trace(format!("F\t{}", kept.written));
+            self.teach(&kept.written, &failed);
+        }
     }
 
     /// Files a gesture as the user's own trace for the word it really meant.
@@ -831,6 +892,21 @@ impl Engine {
         }
     }
 
+    /// Remembers a deleted word, so the same gesture does not give it again.
+    fn note_retry(&mut self, word: &str, gesture: &[Sample]) {
+        let Some(pitch) = self.board.as_ref().and_then(|b| b.layout.as_ref()).map(Layout::pitch) else {
+            return;
+        };
+        if gesture.len() < 2 {
+            return;
+        }
+        let shape = signature(gesture, pitch);
+        match self.retry.as_mut().filter(|known| signature_distance(&known.gesture, &shape) <= RETRY_REACH) {
+            Some(known) => known.words.push(word.to_lowercase()),
+            None => self.retry = Some(Retry { words: vec![word.to_lowercase()], gesture: shape }),
+        }
+    }
+
     fn update_leaning(&mut self, word: &str) {
         let languages = self.lexicon.as_ref().map_or(0, |lexicon| lexicon.languages(word));
         let evidence = match languages {
@@ -842,16 +918,19 @@ impl Engine {
     }
 
     /// Queues a finished word for learning, and learns the one before it.
-    fn remember(&mut self, previous: String, word: &str) {
-        self.update_leaning(word);
-        if let Some(failed) = self.failed_gesture.take() {
-            self.trace(format!("F\t{word}"));
-            self.teach(word, &failed);
-        }
+    fn remember(&mut self, previous: String, history: Vec<String>, written: &str) {
+        self.update_leaning(written);
         self.confirm_pending();
+        let failed_gesture = self.failed_gesture.take();
         if self.field.allows_learning() {
-            self.pending = Some((previous, word.to_lowercase()));
+            let locked = self.shift == Shift::Locked;
+            self.pending = Some(Pending { previous, history, written: written.to_owned(), locked, failed_gesture });
         }
+    }
+
+    /// Queues a word that already ends the mirror.
+    fn remember_written(&mut self, written: &str) {
+        self.remember(self.token_before(written), self.history(written), written);
     }
 
     fn save_memory(&mut self) {
@@ -869,9 +948,9 @@ impl Engine {
         self.predictions = match (&self.next_words, between_words && self.field.allows_suggestions()) {
             (Some(next_words), true) => {
                 let previous = self.previous_token();
-                let mut words = self.memory.next_after(&previous);
+                let mut words = self.memory.phrases(&self.history(""), &previous);
                 for word in next_words.after(&previous) {
-                    if !words.contains(&word) {
+                    if !words.iter().any(|known| known.split(' ').next() == Some(word.as_str())) {
                         words.push(word);
                     }
                 }
@@ -955,6 +1034,7 @@ impl Engine {
         let Some(key) = self.board.as_ref().and_then(|board| board.key_at(x, y)) else {
             return;
         };
+        self.drop_undo();
         self.out.push(Command::Vibrate { kind: Haptic::Tap });
         self.press(i32::try_from(key).unwrap_or(-1));
         let action = self.key(key).map(|k| k.action.clone());
@@ -1134,8 +1214,9 @@ impl Engine {
             }
             Touch::DeleteSwipe { words, .. } => {
                 if words > 0 {
+                    self.offer_undo(words);
                     self.out.push(Command::DeleteSelection);
-                    self.out.push(Command::RequestContext);
+                    self.request_context();
                 }
             }
             Touch::ShiftDrag { prior } => self.release_shift(prior, x, y, t),
@@ -1479,7 +1560,7 @@ impl Engine {
         let mut offered: Vec<String> = self
             .corrections(&typing)
             .into_iter()
-            .map(|(word, _, _)| case_like(&word, &typing.text))
+            .map(|(word, _, _)| case_like(&self.memory.form(&word), &typing.text))
             .collect();
         if !offered.contains(&typing.text) && !self.is_valid_word(&typing.text) {
             offered.insert(1.min(offered.len()), typing.text.clone());
@@ -1494,8 +1575,7 @@ impl Engine {
     /// Learns a tapped word that stays as written.
     fn finish_typing_literal(&mut self) {
         if let Some(typing) = self.typing.take() {
-            let previous = self.token_before(&typing.text);
-            self.remember(previous, &typing.text);
+            self.remember_written(&typing.text);
         }
     }
 
@@ -1522,15 +1602,13 @@ impl Engine {
             .into_iter()
             .find(|(_, cost, complete)| *complete && *cost <= AUTOCORRECT_COST);
         if let Some((word, _, _)) = best {
-            let written = case_like(&word, &typing.text);
+            let written = case_like(&self.memory.form(&word), &typing.text);
             self.delete_units(utf16_len(&typing.text));
             self.insert_text(&written);
-            let previous = self.token_before(&written);
-            self.remember(previous, &written);
+            self.remember_written(&written);
             self.corrected = Some(Corrected { typed: typing.text, written });
         } else {
-            let previous = self.token_before(&typing.text);
-            self.remember(previous, &typing.text);
+            self.remember_written(&typing.text);
         }
     }
 
@@ -1574,6 +1652,7 @@ impl Engine {
     }
 
     fn insert_text(&mut self, text: &str) {
+        self.drop_undo();
         self.out.push(Command::Commit { text: text.to_owned() });
         if self.field.allows_reading() {
             self.before.push_str(text);
@@ -1625,7 +1704,7 @@ impl Engine {
         }
         if self.selection.0 != self.selection.1 {
             self.out.push(Command::DeleteSelection);
-            self.out.push(Command::RequestContext);
+            self.request_context();
             return;
         }
         if self.revert_correction() {
@@ -1640,6 +1719,7 @@ impl Engine {
             && self.before.ends_with(&word.text) {
                 self.trace("D".to_owned());
                 self.failed_gesture = Some(word.gesture.clone()).filter(|gesture| !gesture.is_empty());
+                self.note_retry(&word.text, &word.gesture);
                 // Backspace after a swipe removes the whole word (B-7).
                 self.delete_units(utf16_len(&word.text));
                 self.spacing = Spacing::None;
@@ -1744,7 +1824,7 @@ impl Engine {
         self.cursor = end;
         self.expected_selection = None;
         self.clear_suggestions();
-        self.out.push(Command::RequestContext);
+        self.request_context();
     }
 
     /// What ranking a gesture needs, cheap to copy and free of the engine, so
@@ -1761,6 +1841,7 @@ impl Engine {
             history: self.history(""),
             leaning: self.leaning,
             shift: self.shift,
+            retry: self.retry.clone(),
         })
     }
 
@@ -1775,6 +1856,7 @@ impl Engine {
 
     fn finish_gesture(&mut self, path: &[Sample]) {
         self.finish_typing();
+        self.confirm_pending();
         let Some(decoding) = self.snapshot() else {
             return;
         };
@@ -1791,7 +1873,7 @@ impl Engine {
             return;
         }
         let cased = self.apply_case(&first);
-        let alternatives: Vec<String> = words.iter().skip(1).map(|word| case_like(word, &cased)).collect();
+        let alternatives: Vec<String> = words.iter().skip(1).map(|word| case_like(&self.memory.form(word), &cased)).collect();
         self.commit_word(cased, alternatives);
         if let Some(word) = self.last_word.as_mut() {
             word.gesture = path.to_vec();
@@ -1800,8 +1882,7 @@ impl Engine {
 
     /// Writes a chosen word with the right spacing and keeps it replaceable.
     fn commit_word(&mut self, cased: String, alternatives: Vec<String>) {
-        let previous = self.previous_token();
-        self.remember(previous, &cased);
+        self.remember(self.previous_token(), self.history(""), &cased);
         let needs_space = self.field.allows_auto_spacing()
             && self.before.chars().next_back().is_some_and(|c| {
                 !c.is_whitespace() && !matches!(c, '\'' | '’' | '-' | '(' | '[' | '{' | '«' | '"' | '/' | '@' | '#')
@@ -1823,7 +1904,7 @@ impl Engine {
     }
 
     fn apply_case(&self, word: &str) -> String {
-        cased(self.shift, word)
+        cased(self.shift, &self.memory.form(word))
     }
 
     fn show_alternatives(&mut self, alternatives: &[String]) {
@@ -1872,7 +1953,50 @@ impl Engine {
         }
     }
 
+    /// Puts deleted text back, the one thing the system's selection menu cannot do.
+    fn restore_deleted(&mut self) {
+        if let Some(mut text) = self.undo.take() {
+            self.out.push(Command::UndoBar { offered: false });
+            self.insert_raw(&text);
+            text.zeroize();
+        }
+    }
+
+    /// Withdraws the undo offer: the text it would restore no longer fits.
+    fn drop_undo(&mut self) {
+        if self.undo.is_some() {
+            self.undo.zeroize();
+            self.out.push(Command::UndoBar { offered: false });
+        }
+    }
+
+    /// Remembers the text a delete drag is about to remove. A field that may
+    /// not be read has an empty mirror, so a password is never kept.
+    fn offer_undo(&mut self, words: u32) {
+        let units = self.word_boundaries(words);
+        let mut taken = 0;
+        let start = self
+            .before
+            .char_indices()
+            .rev()
+            .take_while(|(_, letter)| {
+                taken += letter.len_utf16() as u32;
+                taken <= units
+            })
+            .last()
+            .map_or(self.before.len(), |(index, _)| index);
+        let text = self.before.get(start..).unwrap_or("").to_owned();
+        if !text.is_empty() {
+            self.undo = Some(text);
+            self.out.push(Command::UndoBar { offered: true });
+        }
+    }
+
     fn tap_suggestion(&mut self, x: f32) {
+        if self.undo.is_some() {
+            self.restore_deleted();
+            return;
+        }
         if self.search.is_some() {
             let cell = self.width / SEARCH_CELLS as f32;
             let index = (x / cell) as usize;
@@ -1896,7 +2020,9 @@ impl Engine {
         let has_alternatives = self.last_word.as_ref().is_some_and(|word| !word.alternatives.is_empty());
         if !has_alternatives {
             if let Some(next) = self.predictions.get(slot).cloned() {
-                self.commit_word(next, Vec::new());
+                for word in next.split(' ') {
+                    self.commit_word(word.to_owned(), Vec::new());
+                }
                 self.refresh_shift();
                 self.clear_suggestions();
             }
@@ -1915,7 +2041,7 @@ impl Engine {
         self.teach(&chosen, &gesture);
         word.gesture = gesture;
         if let Some(pending) = self.pending.as_mut() {
-            pending.1 = chosen.to_lowercase();
+            pending.written.clone_from(&chosen);
         }
         self.delete_units(utf16_len(&word.text));
         self.insert_text(&chosen);
@@ -2521,7 +2647,8 @@ mod tests {
         let (x, y) = rig.space();
         let t = rig.t + 700;
         rig.send(Event::Down { pointer: 0, x, y, t });
-        let step = rig.send(Event::Up { pointer: 0, x, y, t: t + 30 });
+        rig.send(Event::Up { pointer: 0, x, y, t: t + 30 });
+        let step = rig.send(Event::Hidden);
         assert!(traces(&step).iter().any(|record| opened(&secret, record) == "F\tzxcv"));
     }
 
@@ -2988,6 +3115,160 @@ mod tests {
         let labels = rig.engine.step(Event::Resize { width: 1080.0, screen_height: 2424.0, density: DENSITY });
         let upper = labels.commands.iter().any(|c| matches!(c, Command::Keys { keys, .. } if keys.iter().any(|k| k.label == "A")));
         assert!(upper);
+    }
+
+    #[test]
+    fn a_second_try_at_a_deleted_gesture_gives_another_word() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let first = rig.text.clone();
+        rig.tap("⌫");
+        assert_eq!(rig.text, "");
+        rig.swipe("ou");
+        assert_ne!(rig.text, first);
+        assert_ne!(rig.text, "");
+    }
+
+    #[test]
+    fn a_kept_word_ends_the_second_try() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        rig.tap("⌫");
+        rig.swipe("ou");
+        assert!(rig.engine.retry.is_some());
+        rig.swipe("bonjour");
+        assert!(rig.engine.retry.is_none());
+    }
+
+    #[test]
+    fn a_word_keeps_the_capitals_the_user_gave_it() {
+        let mut rig = plain_rig();
+        rig.engine.remember("voir".to_owned(), Vec::new(), "GitHub");
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.memory.form("github"), "GitHub");
+    }
+
+    #[test]
+    fn caps_lock_teaches_no_capitals() {
+        let mut rig = plain_rig();
+        rig.engine.shift = Shift::Locked;
+        rig.engine.remember("voir".to_owned(), Vec::new(), "GITHUB");
+        rig.engine.shift = Shift::Off;
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.memory.form("github"), "github");
+    }
+
+    #[test]
+    fn inner_capitals_count_even_at_a_sentence_start() {
+        let mut rig = plain_rig();
+        rig.engine.remember(SENTENCE_START.to_owned(), Vec::new(), "GitHub");
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.memory.form("github"), "GitHub");
+    }
+
+    #[test]
+    fn a_phrasing_from_the_bar_is_written_word_by_word() {
+        let mut rig = plain_rig();
+        rig.send(Event::Text { text: "je ".to_owned() });
+        rig.engine.predictions = vec!["te tiens au courant".to_owned()];
+        rig.tap_at((540.0, 10.0));
+        rig.tap_at((100.0, 10.0));
+        assert!(rig.text.ends_with("je te tiens au courant"), "{}", rig.text);
+    }
+
+    #[test]
+    fn a_gesture_dismisses_the_undo_offer() {
+        let mut rig = plain_rig();
+        rig.engine.undo = Some("deux".to_owned());
+        rig.swipe("bonjour");
+        assert_eq!(rig.engine.undo, None);
+    }
+
+    #[test]
+    fn closing_wipes_the_undo_offer() {
+        let mut rig = rig_with_text("une deux");
+        rig.engine.undo = Some("deux".to_owned());
+        rig.send(Event::Hidden);
+        assert_eq!(rig.engine.undo, None);
+    }
+
+    #[test]
+    fn a_password_field_is_never_asked_for_its_text() {
+        let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT | android::PASSWORD, ime_options: 0 });
+        let step = rig.send(Event::Selection { start: 4, end: 4 });
+        assert!(!step.commands.contains(&Command::RequestContext));
+    }
+
+    #[test]
+    fn a_numeric_pin_is_a_password_and_a_number_is_not() {
+        let pin = Field { input_type: android::CLASS_NUMBER | android::NUMBER_PASSWORD, ime_options: 0 };
+        let number = Field { input_type: android::CLASS_NUMBER, ime_options: 0 };
+        assert!(!pin.allows_reading());
+        assert!(number.allows_reading());
+    }
+
+    #[test]
+    fn a_retry_needs_a_real_gesture_close_to_the_first() {
+        let mut rig = plain_rig();
+        let near = [Sample { x: 100.0, y: 300.0, t_ms: 0 }, Sample { x: 900.0, y: 300.0, t_ms: 100 }];
+        let far = [Sample { x: 900.0, y: 900.0, t_ms: 0 }, Sample { x: 100.0, y: 300.0, t_ms: 100 }];
+        rig.engine.note_retry("ou", &near[..1]);
+        assert!(rig.engine.retry.is_none());
+        rig.engine.note_retry("ou", &near);
+        rig.engine.note_retry("où", &near);
+        assert_eq!(rig.engine.retry.as_ref().map(|retry| retry.words.len()), Some(2));
+        rig.engine.note_retry("eu", &far);
+        assert_eq!(rig.engine.retry.as_ref().map(|retry| retry.words.len()), Some(1));
+    }
+
+    #[test]
+    fn a_password_gives_nothing_to_undo() {
+        let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT | android::PASSWORD, ime_options: 0 });
+        rig.engine.offer_undo(1);
+        assert_eq!(rig.engine.undo, None);
+    }
+
+    #[test]
+    fn a_capital_at_a_sentence_start_teaches_nothing() {
+        let mut rig = plain_rig();
+        rig.engine.remember(SENTENCE_START.to_owned(), Vec::new(), "Bonjour");
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.memory.form("bonjour"), "bonjour");
+    }
+
+    #[test]
+    fn a_failed_gesture_teaches_only_the_word_finally_kept() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        rig.tap("⌫");
+        rig.swipe("bonsoir");
+        rig.tap("⌫");
+        assert_eq!(rig.engine.memory.familiarity("bonsoir"), 0.0);
+    }
+
+    #[test]
+    fn a_delete_drag_can_be_undone_once() {
+        let mut rig = rig_with_text("une deux");
+        let (x, y) = rig.center("⌫");
+        let t = rig.t + 700;
+        rig.send(Event::Down { pointer: 0, x, y, t });
+        rig.send(Event::Move { pointer: 0, x: x - 44.0, y, t: t + 10 });
+        rig.send(Event::Move { pointer: 0, x: x - 50.0, y, t: t + 20 });
+        let lift = rig.send(Event::Up { pointer: 0, x: x - 50.0, y, t: t + 30 });
+        assert!(lift.commands.contains(&Command::UndoBar { offered: true }));
+        assert_eq!(rig.engine.undo.as_deref(), Some("deux"));
+        rig.engine.before = "une ".to_owned();
+        rig.tap_at((540.0, 10.0));
+        assert!(rig.text.ends_with("deux"), "{}", rig.text);
+        assert_eq!(rig.engine.undo, None);
+    }
+
+    #[test]
+    fn typing_dismisses_the_undo_offer() {
+        let mut rig = rig_with_text("une deux");
+        rig.engine.undo = Some("deux".to_owned());
+        rig.tap("a");
+        assert_eq!(rig.engine.undo, None);
     }
 
     #[test]
