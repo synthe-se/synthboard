@@ -205,6 +205,16 @@ impl Lexicon {
         lexicon
     }
 
+    /// Builds a lexicon from `word,weight,languages` lines, skipping bad ones.
+    #[must_use]
+    pub fn from_csv(text: &str) -> Self {
+        Self::with_languages(text.lines().filter_map(|line| {
+            let (rest, languages) = line.rsplit_once(',')?;
+            let (word, weight) = rest.rsplit_once(',')?;
+            Some((word, weight.parse::<f32>().ok()?, languages.parse::<u8>().ok()?))
+        }))
+    }
+
     /// Number of words.
     #[must_use]
     pub fn len(&self) -> usize {

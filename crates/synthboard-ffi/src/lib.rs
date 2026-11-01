@@ -103,12 +103,7 @@ fn open_memory(sealed: &[u8], secret: Vec<u8>) -> Vec<u8> {
 }
 
 fn parse_lexicon(bytes: &[u8]) -> Lexicon {
-    let text = String::from_utf8_lossy(bytes);
-    Lexicon::with_languages(text.lines().filter_map(|line| {
-        let (rest, languages) = line.rsplit_once(',')?;
-        let (word, weight) = rest.rsplit_once(',')?;
-        Some((word, weight.parse::<f32>().ok()?, languages.parse::<u8>().ok()?))
-    }))
+    Lexicon::from_csv(&String::from_utf8_lossy(bytes))
 }
 
 impl Keyboard {

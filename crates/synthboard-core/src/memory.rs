@@ -180,6 +180,40 @@ impl Memory {
         }
     }
 
+    /// Takes back one [`Self::learn_after`], for words the user erased.
+    pub fn unlearn(&mut self, history: &[String], previous: &str, word: &str, known: impl Fn(&str) -> bool) {
+        let demoted = self.words.get(word) == Some(&VALIDATIONS);
+        if let Some(count) = self.words.get_mut(word) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                self.words.remove(word);
+            }
+        }
+        self.drop_pair(previous, word);
+        for context in contexts(history).into_iter().skip(1) {
+            self.drop_pair(&context, word);
+        }
+        if demoted {
+            self.rebuild(known);
+        }
+    }
+
+    fn drop_pair(&mut self, context: &str, word: &str) {
+        let Some(followers) = self.pairs.get_mut(context) else {
+            return;
+        };
+        if let Some(count) = followers.get_mut(word) {
+            *count = count.saturating_sub(1);
+            if *count == 0 {
+                followers.remove(word);
+                self.pair_total = self.pair_total.saturating_sub(1);
+            }
+        }
+        if followers.is_empty() {
+            self.pairs.remove(context);
+        }
+    }
+
     /// Remembers how a word is written. Plain lowercase means it has no form.
     pub fn set_form(&mut self, written: &str) {
         let lower = written.to_lowercase();
@@ -359,6 +393,33 @@ impl Memory {
 #[allow(clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_word_taken_back_below_two_uses_leaves_the_extra_words() {
+        let mut memory = Memory::default();
+        memory.learn("pour", "zzgloop", |_| false);
+        memory.learn("pour", "zzgloop", |_| false);
+        assert!(memory.extra_words().is_some_and(|words| words.contains("zzgloop")));
+        memory.unlearn(&[], "pour", "zzgloop", |_| false);
+        assert!(!memory.extra_words().is_some_and(|words| words.contains("zzgloop")));
+        assert_eq!(memory.words.get("zzgloop"), Some(&1));
+    }
+
+    #[test]
+    fn a_word_taken_back_leaves_no_trace_of_its_pairs() {
+        let mut memory = Memory::default();
+        let history = vec!["merci".to_owned(), "pour".to_owned()];
+        memory.learn_after(&history, "pour", "tout", |_| true);
+        memory.learn_after(&history, "pour", "tout", |_| true);
+        memory.unlearn(&history, "pour", "tout", |_| true);
+        assert_eq!(memory.next_after("pour"), ["tout"]);
+        memory.unlearn(&history, "pour", "tout", |_| true);
+        assert_eq!(memory.next_after("pour"), Vec::<String>::new());
+        assert_eq!(memory.pair_total, 0);
+        assert!(memory.words.is_empty());
+        memory.unlearn(&history, "pour", "tout", |_| true);
+        assert_eq!(memory.pair_total, 0);
+    }
 
     #[test]
     fn habits_lead_the_next_words() {

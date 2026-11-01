@@ -587,6 +587,7 @@ dependencies = [
  "ruzstd",
  "serde",
  "serde_json",
+ "synthboard-core",
  "synthboard-seal",
  "synthswipe",
  "synthswipe-onnx",

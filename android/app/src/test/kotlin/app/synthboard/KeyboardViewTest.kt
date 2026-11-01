@@ -41,6 +41,16 @@ class KeyboardViewTest {
         }
     }
 
+    @Test
+    fun emojiThatArriveAfterThePanelOpenedAreDrawn() {
+        val keyboard = view()
+        keyboard.setPanel(true, listOf("👍"), 0)
+        val shadow = org.robolectric.Shadows.shadowOf(keyboard)
+        shadow.clearWasInvalidated()
+        keyboard.setEmoji(listOf("Smileys" to listOf(EmojiItem("😀", emptyList()))))
+        assertTrue(shadow.wasInvalidated())
+    }
+
     private fun View.layOut(width: Int) {
         measure(
             View.MeasureSpec.makeMeasureSpec(width, View.MeasureSpec.EXACTLY),

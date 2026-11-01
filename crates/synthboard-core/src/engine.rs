@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use synthboard_seal::KEY_BYTES;
-use synthswipe::{FREQUENCY_WEIGHT, NETWORK_WEIGHT, Neural, POOL, lean, fold, Affinities, Grammar, Layout, Lexicon, Params, signature, signature_distance, SENTENCE_START, Sample, correct, decode_in_context, tokens};
+use synthswipe::{fits_gesture, FREQUENCY_WEIGHT, NETWORK_WEIGHT, Neural, POOL, lean, fold, Affinities, Grammar, Layout, Lexicon, Params, signature, signature_distance, SENTENCE_START, Sample, correct, decode_in_context, tokens};
 use unicode_segmentation::UnicodeSegmentation;
 use zeroize::Zeroize;
 
@@ -104,6 +104,13 @@ const SECRET_KEY: &str = "•";
 const MIRROR_BYTES: usize = 4096;
 /// How close a new gesture must be to a deleted one to be a second try, in key pitches.
 const RETRY_REACH: f32 = 0.6;
+/// Corrections kept for the session. A correction stands for the same gesture at
+/// once, even drawn too loosely to match its trace: the owner corrected one word
+/// three times in a row without it coming first.
+const FRESH_CHOICES: usize = 8;
+/// Words kept ready to be taken back from memory if they are erased: a sentence
+/// rephrased rarely goes further back than this.
+const UNLEARNABLE_WORDS: usize = 6;
 /// The two languages of the lexicon's third column, as bits. Which languages
 /// they are is the data's business: `tools/pack-lexicon.sh` decides.
 const FIRST_LANGUAGE: u8 = 1;
@@ -112,7 +119,7 @@ const SECOND_LANGUAGE: u8 = 2;
 const LANGUAGE_MEMORY: f32 = 0.8;
 const LANGUAGE_LIMIT: f32 = 3.0;
 /// Where a session starts: French by a little, the user's main language.
-const LANGUAGE_START: f32 = 0.7;
+pub const LANGUAGE_START: f32 = 0.7;
 /// Context points per unit of language evidence. With `context_weight`, the
 /// full limit tilts a word by about 0.7 nat: enough to separate `il` from
 /// `i'll`, never enough to exclude `merge` from a French sentence.
@@ -318,6 +325,14 @@ struct Typing {
     remnant: bool,
 }
 
+/// A word just learned, with what it was learned after.
+#[derive(Debug, Clone)]
+struct Learned {
+    previous: String,
+    history: Vec<String>,
+    word: String,
+}
+
 /// How much of the saved memory is in RAM, which it leaves whenever the keyboard
 /// hides. Only a full copy is ever saved, or the file would lose the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -408,6 +423,8 @@ pub struct Engine {
     screenshots: bool,
     neural: Option<Arc<Neural>>,
     neural_decides: bool,
+    fresh: Vec<(String, Vec<[f32; 2]>)>,
+    learned: Vec<Learned>,
     /// Memory waiting to be sealed, with the key to seal it to.
     unsaved: Option<(Arc<Memory>, [u8; KEY_BYTES])>,
     /// The shift state when the current word began.
@@ -537,6 +554,7 @@ fn replace_wiped(target: &mut String, mut text: String) {
 #[derive(Debug, Clone)]
 pub struct Decoding {
     lexicon: Arc<Lexicon>,
+    fresh: Vec<(String, Vec<[f32; 2]>)>,
     affinities: Option<Arc<Affinities>>,
     grammar: Option<Arc<Grammar>>,
     neural: Option<Arc<Neural>>,
@@ -599,6 +617,10 @@ impl Decoding {
             let leads = strength >= TRACE_LEADS || count >= TRACE_VOTES;
             words.insert(usize::from(!leads).min(words.len()), word);
         }
+        if let Some((word, _)) = self.fresh.iter().rev().find(|(_, shape)| signature_distance(shape, &gesture) <= RETRY_REACH) {
+            words.retain(|known| !known.eq_ignore_ascii_case(word));
+            words.insert(0, word.clone());
+        }
         // A second try at a deleted gesture must not give the same word again.
         if let Some(retry) = self.retry.as_ref().filter(|r| signature_distance(&r.gesture, &gesture) <= RETRY_REACH) {
             words.sort_by_key(|word| retry.words.contains(&word.to_lowercase()));
@@ -616,8 +638,20 @@ impl Decoding {
     }
 }
 
+/// The session's language after a word of these languages.
+#[must_use]
+pub fn next_leaning(leaning: f32, languages: u8) -> f32 {
+    let evidence = match languages {
+        FIRST_LANGUAGE => 1.0,
+        SECOND_LANGUAGE => -1.0,
+        _ => return leaning,
+    };
+    (leaning * LANGUAGE_MEMORY + evidence).clamp(-LANGUAGE_LIMIT, LANGUAGE_LIMIT)
+}
+
 /// How the session's language tilts a word: only a word of one language moves.
-fn language_tilt(languages: u8, leaning: f32) -> f32 {
+#[must_use]
+pub fn language_tilt(languages: u8, leaning: f32) -> f32 {
     match languages {
         FIRST_LANGUAGE => LANGUAGE_TILT * leaning,
         SECOND_LANGUAGE => -LANGUAGE_TILT * leaning,
@@ -640,6 +674,22 @@ fn without_last_character(word: &str) -> String {
     let mut left: Vec<&str> = word.graphemes(true).collect();
     left.pop();
     left.concat()
+}
+
+fn bare(text: &str) -> &str {
+    text.trim_end_matches(|letter: char| !letter.is_alphanumeric())
+}
+
+/// Whether `text` ends with these words, whatever spaces and marks surround them.
+fn ends_with_words(text: &str, words: &[Learned]) -> bool {
+    let mut rest = text;
+    for learned in words.iter().rev() {
+        match bare(rest).strip_suffix(bare(&learned.word)) {
+            Some(before) => rest = before,
+            None => return false,
+        }
+    }
+    true
 }
 
 fn attaches_to_word(text: &str) -> bool {
@@ -667,6 +717,8 @@ impl Engine {
             screenshots: false,
             neural: None,
             neural_decides: false,
+            fresh: Vec::new(),
+            learned: Vec::new(),
             unsaved: None,
             word_shift: Shift::default(),
             undo: None,
@@ -906,6 +958,7 @@ impl Engine {
         self.retry = None;
         self.failed_gesture = None;
         self.field = field;
+        self.learned.clear();
         self.out.push(Command::ProtectScreen { on: !self.screenshots || !field.allows_reading() });
         self.leaning = LANGUAGE_START;
         replace_wiped(&mut self.before, if field.allows_reading() { before } else { String::new() });
@@ -998,6 +1051,11 @@ impl Engine {
         if let Some(mut retry) = self.retry.take() {
             retry.words.zeroize();
         }
+        for (word, shape) in &mut self.fresh {
+            word.zeroize();
+            shape.fill([0.0; 2]);
+        }
+        self.fresh.clear();
         self.drop_undo();
         if let Some(mut typing) = self.typing.take() {
             typing.text.zeroize();
@@ -1077,6 +1135,12 @@ impl Engine {
         let known = self.known();
         let memory = Arc::make_mut(&mut self.memory);
         memory.learn_after(&kept.history, &kept.previous, &word, known);
+        if self.field.allows_learning() {
+            if self.learned.len() >= UNLEARNABLE_WORDS {
+                self.learned.remove(0);
+            }
+            self.learned.push(Learned { previous: kept.previous.clone(), history: kept.history.clone(), word: word.clone() });
+        }
         // A sentence start capitalises anything, so only inner capitals count there.
         let starts_sentence = kept.previous == SENTENCE_START;
         if !kept.imposed && (!starts_sentence || kept.written.chars().skip(1).any(char::is_uppercase)) {
@@ -1095,6 +1159,10 @@ impl Engine {
             return;
         };
         if self.field.allows_learning() && gesture.len() >= 2 {
+            if self.fresh.len() >= FRESH_CHOICES {
+                self.fresh.remove(0).0.zeroize();
+            }
+            self.fresh.push((word.to_lowercase(), signature(gesture, pitch)));
             Arc::make_mut(&mut self.memory).add_trace(word, signature(gesture, pitch));
             self.memory_changed = true;
             // A chat app keeps the keyboard open for hours, so waiting for it
@@ -1120,12 +1188,7 @@ impl Engine {
 
     fn update_leaning(&mut self, word: &str) {
         let languages = self.lexicon.as_ref().map_or(0, |lexicon| lexicon.languages(word));
-        let evidence = match languages {
-            FIRST_LANGUAGE => 1.0,
-            SECOND_LANGUAGE => -1.0,
-            _ => return,
-        };
-        self.leaning = (self.leaning * LANGUAGE_MEMORY + evidence).clamp(-LANGUAGE_LIMIT, LANGUAGE_LIMIT);
+        self.leaning = next_leaning(self.leaning, languages);
     }
 
     /// Queues a finished word for learning, and learns the one before it.
@@ -1148,8 +1211,9 @@ impl Engine {
     }
 
     /// Whether a deleted gesture can have meant this word: it must start and
-    /// end near the word's first and last keys. Otherwise the user changed
-    /// their mind, and teaching the word would spoil the gesture.
+    /// end near the word's first and last keys, and pass its letters in order.
+    /// Otherwise the user changed their mind, and teaching the word would spoil
+    /// the gesture.
     fn gesture_fits(&self, word: &str, gesture: &[Sample]) -> bool {
         let Some(layout) = self.board.as_ref().and_then(|board| board.layout.as_ref()) else {
             return false;
@@ -1159,7 +1223,8 @@ impl Engine {
             (Some([x, y]), Some(point)) => (x - point.x).hypot(y - point.y) <= TEACH_REACH_KEYS * layout.pitch(),
             _ => false,
         };
-        near(keys.first(), gesture.first()) && near(keys.last(), gesture.last())
+                near(keys.first(), gesture.first()) && near(keys.last(), gesture.last())
+            && fits_gesture(layout, word, gesture, &self.params)
     }
 
     /// Queues a word that already ends the mirror.
@@ -2015,6 +2080,7 @@ impl Engine {
         if units > 0 {
             self.delete_units(units);
         }
+        self.unlearn_erased();
         self.clear_suggestions();
         self.refresh_shift();
     }
@@ -2025,7 +2091,26 @@ impl Engine {
         self.clear_suggestions();
         let units = self.before.graphemes(true).next_back().map_or(1, utf16_len);
         self.delete_units(units);
+        self.unlearn_erased();
         self.refresh_shift();
+    }
+
+    /// Takes back the words the user erased: a rephrased sentence teaches nothing.
+    fn unlearn_erased(&mut self) {
+        let text = self.before.to_lowercase();
+        let unfinished = text.rsplit_once(char::is_whitespace).map_or("", |(start, _)| start);
+        let holds = |words: &[Learned]| ends_with_words(&text, words) || ends_with_words(unfinished, words);
+        let kept = (0..=self.learned.len()).rev().find(|&count| holds(self.learned.get(..count).unwrap_or_default())).unwrap_or(0);
+        let erased = self.learned.split_off(kept);
+        if erased.is_empty() {
+            return;
+        }
+        let known = self.known();
+        let memory = Arc::make_mut(&mut self.memory);
+        for learned in &erased {
+            memory.unlearn(&learned.history, &learned.previous, &learned.word, &known);
+        }
+        self.memory_changed = true;
     }
 
     fn word_boundaries(&self, words: u32) -> u32 {
@@ -2099,6 +2184,7 @@ impl Engine {
             // A chat app keeps the keyboard open after Send (M-3).
             self.leaning = LANGUAGE_START;
             self.confirm_pending();
+            self.learned.clear();
             self.save_memory();
         }
         if let Some(position) = self.expected_selections.iter().position(|&known| known == end && start == end) {
@@ -2106,6 +2192,7 @@ impl Engine {
             return;
         }
         self.end_word();
+        self.learned.clear();
         self.drop_undo();
         self.failed_gesture = None;
         self.cursor = end;
@@ -2118,6 +2205,7 @@ impl Engine {
     /// that the live preview can run while the finger keeps moving.
     fn snapshot(&self) -> Option<Decoding> {
         Some(Decoding {
+            fresh: self.fresh.clone(),
             lexicon: self.lexicon.clone()?,
             affinities: self.affinities.clone(),
             grammar: self.grammar.clone(),
@@ -2158,7 +2246,8 @@ impl Engine {
         }
         let points: Vec<String> = path.iter().map(|p| format!("{:.0},{:.0},{}", p.x, p.y, p.t_ms)).collect();
         let other = self.other_reading(&decoding, path);
-        self.trace(format!("G\t{first}\t{}\t{}\t{}\t{other}", words.join(","), points.join(" "), self.history("").join(" ")));
+        let reader = if self.neural.is_some() && self.neural_decides { "n" } else { "g" };
+        self.trace(format!("G\t{first}\t{}\t{}\t{}\t{other}\t{reader}", words.join(","), points.join(" "), self.history("").join(" ")));
         if self.search_input(&first) {
             return;
         }
@@ -2562,6 +2651,104 @@ mod tests {
     }
 
     #[test]
+    fn a_correction_leads_for_the_same_gesture_at_once() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let gesture = rig.engine.last_word.as_ref().unwrap().gesture.clone();
+        rig.tap_at((540.0, 10.0));
+        let chosen = rig.text.clone();
+        assert_ne!(chosen, "ou");
+        let words = rig.engine.snapshot().unwrap().rank(&gesture);
+        assert_eq!(words.iter().filter(|word| **word == chosen).count(), 1, "{words:?}");
+        rig.engine.memory = Arc::new(Memory::default());
+        rig.tap_at(rig.space());
+        rig.text.clear();
+        rig.engine.before.clear();
+        rig.swipe("ou");
+        assert_eq!(rig.text, chosen);
+    }
+
+    #[test]
+    fn corrections_are_kept_within_a_bound_and_leave_with_the_keyboard() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let gesture = vec![Sample { x: 0.0, y: 0.0, t_ms: 0 }, Sample { x: 90.0, y: 0.0, t_ms: 10 }];
+        for index in 0..=FRESH_CHOICES {
+            rig.engine.teach(&format!("word{index}"), &gesture);
+        }
+        assert_eq!(rig.engine.fresh.len(), FRESH_CHOICES);
+        assert_eq!(rig.engine.fresh.first().map(|entry| entry.0.as_str()), Some("word1"));
+        rig.send(Event::Hidden);
+        assert_eq!(rig.engine.fresh.len(), 0);
+    }
+
+    #[test]
+    fn each_language_pulls_the_session_its_own_way() {
+        assert!(next_leaning(0.0, FIRST_LANGUAGE) > 0.0);
+        assert!(next_leaning(0.0, SECOND_LANGUAGE) < 0.0);
+        assert!((next_leaning(0.5, 0) - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn the_trace_says_who_decided() {
+        let (mut rig, secret) = traced_rig(TEXT_FIELD);
+        with_network(&mut rig, false);
+        rig.send(Event::Neural { deciding: true });
+        let step = rig.swipe_step("bonjour");
+        let lines: Vec<String> = traces(&step).iter().map(|record| opened(&secret, record)).collect();
+        assert_eq!(lines.iter().find(|line| line.starts_with("G\t")).unwrap().rsplit('\t').next(), Some("n"));
+        rig.send(Event::Neural { deciding: false });
+        let step = rig.swipe_step("bonjour");
+        let lines: Vec<String> = traces(&step).iter().map(|record| opened(&secret, record)).collect();
+        assert_eq!(lines.iter().find(|line| line.starts_with("G\t")).unwrap().rsplit('\t').next(), Some("g"));
+    }
+
+    #[test]
+    fn a_sentence_rephrased_is_taken_back_from_memory() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        rig.swipe("bonsoir");
+        rig.swipe("été");
+        rig.tap_at(rig.space());
+        assert_eq!(rig.engine.memory.next_after("bonjour"), ["bonsoir"]);
+        while !rig.text.trim_end().ends_with("bonjour") {
+            rig.tap("⌫");
+        }
+        assert_eq!(rig.engine.memory.next_after("bonjour"), Vec::<String>::new());
+        assert!(!rig.engine.memory.next_after("<s>").is_empty(), "the kept word stays learned");
+    }
+
+    #[test]
+    fn fixing_a_letter_keeps_the_words_before_it() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        rig.swipe("bonsoir");
+        rig.swipe("été");
+        rig.tap("⌫");
+        assert_eq!(rig.engine.memory.next_after("bonjour"), ["bonsoir"]);
+    }
+
+    #[test]
+    fn moving_the_cursor_makes_deleting_teach_nothing_back() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        rig.swipe("bonsoir");
+        rig.swipe("été");
+        rig.send(Event::Selection { start: 3, end: 3 });
+        rig.tap("⌫");
+        assert_eq!(rig.engine.memory.next_after("bonjour"), ["bonsoir"]);
+    }
+
+    #[test]
+    fn words_end_a_text_whatever_the_marks_around_them() {
+        let learned = |word: &str| Learned { previous: String::new(), history: Vec::new(), word: word.to_owned() };
+        assert!(ends_with_words("dit bonjour, ", &[learned("bonjour")]));
+        assert!(ends_with_words("c'est l'été", &[learned("c'est"), learned("l'"), learned("été")]));
+        assert!(!ends_with_words("dit bonjou", &[learned("bonjour")]));
+        assert!(ends_with_words("", &[]));
+    }
+
+    #[test]
     fn a_new_gesture_replaces_what_backspace_left() {
         let mut rig = Rig::new(TEXT_FIELD);
         rig.swipe("ou");
@@ -2934,7 +3121,7 @@ mod tests {
         let step = rig.swipe_step("bonjour");
         let lines: Vec<String> = traces(&step).iter().map(|record| opened(&secret, record)).collect();
         let gesture = lines.iter().find(|line| line.starts_with("G\t")).unwrap();
-        assert_eq!(gesture.rsplit('\t').next(), Some("bonjour"));
+        assert_eq!(gesture.rsplit('\t').nth(1), Some("bonjour"));
         assert_eq!(runs.load(Ordering::Relaxed), 1);
     }
 
@@ -3092,12 +3279,12 @@ mod tests {
         rig.swipe("bonjour");
         clear_word(&mut rig);
         assert_eq!(rig.text, "");
-        type_word(&mut rig, "bxzr");
+        type_word(&mut rig, "bjour");
         rig.tap_at(rig.space());
         rig.text.clear();
         rig.engine.before.clear();
         rig.swipe("bonjour");
-        assert!(rig.text.ends_with("bxzr"), "{}", rig.text);
+        assert!(rig.text.ends_with("bjour"), "{}", rig.text);
     }
 
     #[test]
@@ -3107,13 +3294,13 @@ mod tests {
         rig.engine.set_trace_key(public);
         rig.swipe("bonjour");
         clear_word(&mut rig);
-        type_word(&mut rig, "bxzr");
+        type_word(&mut rig, "bjour");
         let (x, y) = rig.space();
         let t = rig.t + 700;
         rig.send(Event::Down { pointer: 0, x, y, t });
         rig.send(Event::Up { pointer: 0, x, y, t: t + 30 });
         let step = rig.send(Event::Hidden);
-        assert!(traces(&step).iter().any(|record| opened(&secret, record) == "F\tbxzr"));
+        assert!(traces(&step).iter().any(|record| opened(&secret, record) == "F\tbjour"));
     }
 
     #[test]
@@ -3898,16 +4085,18 @@ mod tests {
     }
 
     #[test]
-    fn a_gesture_fits_a_word_only_at_both_ends() {
+    fn a_gesture_must_fit_a_word_all_along() {
         let rig = plain_rig();
         let at = |label: &str| {
             let (x, y) = rig.center(label);
             Sample { x, y, t_ms: 0 }
         };
-        assert!(rig.engine.gesture_fits("bon", &[at("b"), at("n")]));
-        assert!(!rig.engine.gesture_fits("sel", &[at("b"), at("l")]));
-        assert!(!rig.engine.gesture_fits("bon", &[at("b"), at("a")]));
-        assert!(!rig.engine.gesture_fits("non", &[at("a"), at("n")]));
+        let path = [at("b"), at("o"), at("n")];
+        assert!(rig.engine.gesture_fits("bon", &path));
+        assert!(!rig.engine.gesture_fits("sel", &path));
+        assert!(!rig.engine.gesture_fits("bon", &[at("b"), at("o"), at("a")]));
+        assert!(!rig.engine.gesture_fits("non", &[at("a"), at("o"), at("n")]));
+        assert!(!rig.engine.gesture_fits("bzn", &path), "same ends, another middle");
     }
 
     #[test]

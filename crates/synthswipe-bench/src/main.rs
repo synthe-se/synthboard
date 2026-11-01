@@ -40,8 +40,13 @@ struct Outcome {
 
 static GRAMMAR: OnceLock<(Grammar, f32)> = OnceLock::new();
 
-/// Context strengths tried on the owner's gestures.
-const CONTEXT_FACTORS: [f32; 6] = [0.5, 1.0, 2.0, 4.0, 8.0, 16.0];
+/// Language tilt as a multiple of the shipped one, starting lean and context strength, tried on the owner's gestures.
+const LANGUAGE_TRIALS: [(f32, f32, f32); 1] = [(1.0, 0.7, 1.0)];
+/// Rivals tried for the gesture check: common words of some length, a few per correction.
+const COMMON_WEIGHT: f32 = 100.0;
+const MIN_RIVAL_KEYS: usize = 4;
+const RIVALS_PER_CORRECTION: usize = 10;
+
 /// The weight of agreement in `synthboard-core`.
 const GRAMMAR_FACTOR: f32 = 10.0;
 
@@ -163,14 +168,35 @@ fn run_probe(gestures: &[Gesture], params: &Params, previous: &str, words: &str,
 /// they picked from the bar, or the decoded word if they did not undo it.
 #[allow(clippy::too_many_lines)]
 fn run_personal(text: &str, params: &Params, gestures: &[Gesture], neural: Option<&synthswipe::Neural>, root: &std::path::Path) {
+    // With the network, the keyboard's own word list: both languages, as on the phone.
+    let deployed = std::fs::read_to_string(root.join("../../android/app/src/main/assets/lexicon.csv")).unwrap_or_default();
     let table = Affinities::from_bytes(&std::fs::read(root.join("../../android/app/src/main/assets/affinity.bin")).unwrap_or_default());
     let forms = std::fs::read_to_string(root.join("../../android/app/src/main/assets/forms.tsv")).unwrap_or_default();
     let grammar = synthswipe::Grammar::parse(&forms);
     let (mut recorded, mut differed, mut first_right, mut other_right) = (0, 0, 0, 0);
-    let mut in_context = [0; CONTEXT_FACTORS.len()];
+    let mut in_context = [0; LANGUAGE_TRIALS.len()];
     let mut geometry_in_context = 0;
-    let Some(lexicon) = gestures.iter().find(|g| g.cell.language == "fr").map(|g| g.lexicon.clone()) else {
-        return;
+    // Same first and last letters as a word truly meant: what the old check took for a correction.
+    let mut same_ends: HashMap<(char, char), Vec<String>> = HashMap::new();
+    for line in deployed.lines() {
+        let mut fields = line.rsplitn(3, ',');
+        let (Some(_), Some(weight), Some(word)) = (fields.next(), fields.next(), fields.next()) else { continue };
+        let keys = synthswipe::fold(word);
+        if let (Some(&first), Some(&last), Ok(weight)) = (keys.first(), keys.last(), weight.parse::<f32>())
+            && weight >= COMMON_WEIGHT
+            && keys.len() >= MIN_RIVAL_KEYS
+        {
+            same_ends.entry((first, last)).or_default().push(word.to_lowercase());
+        }
+    }
+    let (mut corrections, mut corrections_fit, mut rivals, mut rivals_fit) = (0, 0, 0, 0);
+    let lexicon = if neural.is_some() {
+        std::sync::Arc::new(synthswipe::Lexicon::from_csv(&deployed))
+    } else {
+        let Some(lexicon) = gestures.iter().find(|g| g.cell.language == "fr").map(|g| g.lexicon.clone()) else {
+            return;
+        };
+        lexicon
     };
     let mut layout = None;
     let lines: Vec<&str> = text.lines().collect();
@@ -225,6 +251,18 @@ fn run_personal(text: &str, params: &Params, gestures: &[Gesture], neural: Optio
                     continue;
                 }
                 total += 1;
+                if truth != word.to_lowercase() {
+                    corrections += 1;
+                    corrections_fit += usize::from(synthswipe::fits_gesture(layout, &truth, &samples, params));
+                    let keys = synthswipe::fold(&truth);
+                    if let (Some(first), Some(last)) = (keys.first(), keys.last()) {
+                        let pool = same_ends.get(&(*first, *last)).map_or(&[][..], Vec::as_slice);
+                        for rival in pool.iter().filter(|rival| **rival != truth).take(RIVALS_PER_CORRECTION) {
+                            rivals += 1;
+                            rivals_fit += usize::from(synthswipe::fits_gesture(layout, rival, &samples, params));
+                        }
+                    }
+                }
                 let other = rest.get(1).copied().unwrap_or_default().to_lowercase();
                 if !other.is_empty() {
                     recorded += 1;
@@ -236,16 +274,22 @@ fn run_personal(text: &str, params: &Params, gestures: &[Gesture], neural: Optio
                 }
                 let history: Vec<String> = rest.first().map_or_else(Vec::new, |line| tokens_of(line));
                 let previous = history.last().cloned().unwrap_or_else(|| synthswipe::SENTENCE_START.to_owned());
-                let context = |word: &str| table.score(&previous, word) + GRAMMAR_FACTOR * grammar.score(&history, word);
+                let sentence = |word: &str| table.score(&previous, word) + GRAMMAR_FACTOR * grammar.score(&history, word);
+                let context = sentence;
                 let reading = neural.and_then(|neural| neural.read(layout, &samples));
                 if let Some(reading) = &reading {
                     let full = decode_in_context(layout, &lexicon, &samples, params, 3, context).unwrap_or_default();
                     geometry_in_context += usize::from(full.first().is_some_and(|c| c.surface.to_lowercase() == truth));
-                    for (slot, factor) in in_context.iter_mut().zip(CONTEXT_FACTORS) {
-                        let lean = synthswipe::lean(params);
-                        let tuned = Params { context_weight: lean.context_weight * factor, ..lean };
-                        let found = decode_in_context(layout, &lexicon, &samples, &tuned, synthswipe::POOL, context).unwrap_or_default();
-                        let blended = reading.blend(&lexicon, &found, &tuned, synthswipe::NETWORK_WEIGHT, synthswipe::FREQUENCY_WEIGHT, context);
+                    for (slot, (factor, start, strength)) in in_context.iter_mut().zip(LANGUAGE_TRIALS) {
+                        let shipped = synthswipe::lean(params);
+                        let lean = Params { context_weight: shipped.context_weight * strength, ..shipped };
+                        let leaning = history
+                            .iter()
+                            .fold(start, |leaning, word| synthboard_core::next_leaning(leaning, lexicon.languages(word)));
+                        let tilted =
+                            |word: &str| sentence(word) + factor * synthboard_core::language_tilt(lexicon.languages(word), leaning);
+                        let found = decode_in_context(layout, &lexicon, &samples, &lean, synthswipe::POOL, tilted).unwrap_or_default();
+                        let blended = reading.blend(&lexicon, &found, &lean, synthswipe::NETWORK_WEIGHT, synthswipe::FREQUENCY_WEIGHT, tilted);
                         *slot += usize::from(blended.first().is_some_and(|c| c.surface.to_lowercase() == truth));
                     }
                 }
@@ -268,10 +312,11 @@ fn run_personal(text: &str, params: &Params, gestures: &[Gesture], neural: Optio
     if neural.is_some() {
         // Counts only: this line may be shown beyond the volume.
         println!("{hits}/{total} lean geometry, {blended}/{total} with the network, without context");
-        println!("context tables: {} forms bytes; with context: geometry {geometry_in_context}/{total}", forms.len());
-        for (factor, count) in CONTEXT_FACTORS.iter().zip(in_context) {
-            println!("with context times {factor}, network: {count}/{total}");
+        println!("lexicon words {}; context tables: {} forms bytes; with context: geometry {geometry_in_context}/{total}", lexicon.len(), forms.len());
+        for ((factor, start, strength), count) in LANGUAGE_TRIALS.iter().zip(in_context) {
+            println!("tilt x{factor} start {start} context x{strength}: {count}/{total}");
         }
+        println!("corrections that fit {corrections_fit}/{corrections}; rivals with the same ends that fit {rivals_fit}/{rivals}");
         println!("recorded the other reader on {recorded}; they differed on {differed}: the written word stayed {first_right}, the other was right {other_right}");
         return;
     }

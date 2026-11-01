@@ -196,6 +196,14 @@ impl Crossings {
     }
 }
 
+/// Whether the whole gesture can have meant `word`, whatever the lexicon holds: it
+/// must pass the word's letters in order, not only start and end near them.
+#[must_use]
+pub fn fits_gesture(layout: &Layout, word: &str, samples: &[Sample], params: &Params) -> bool {
+    let one = Lexicon::new([(word, 1.0)]);
+    decode(layout, &one, samples, params, 1).is_ok_and(|found| !found.is_empty())
+}
+
 /// Decodes a gesture without any sentence context.
 ///
 /// # Errors
@@ -683,5 +691,21 @@ mod tests {
         let thin = Params { points: 1, ..params };
         let tap = [Sample { x: 0.0, y: 0.0, t_ms: 0 }];
         assert_eq!(decode(&layout, &lexicon, &tap, &thin, 3), Err(DecodeError::TooFewPoints));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod fit_tests {
+    use super::*;
+    use crate::layout::Key;
+
+    #[test]
+    fn a_gesture_fits_only_the_words_it_passes_through() {
+        let keys = "abcdefghij".chars().enumerate().map(|(index, label)| Key { label, x: index as f32 * 10.0, y: 0.0 });
+        let layout = Layout::new(keys).unwrap();
+        let samples: Vec<Sample> = (0..=9).map(|index| Sample { x: index as f32 * 10.0, y: 0.0, t_ms: index * 10 }).collect();
+        assert!(fits_gesture(&layout, "aej", &samples, &Params::default()));
+        assert!(!fits_gesture(&layout, "ajea", &samples, &Params::default()));
     }
 }

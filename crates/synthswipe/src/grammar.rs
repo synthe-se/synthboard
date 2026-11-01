@@ -9,11 +9,33 @@ const THIRD_SINGULAR: u8 = 4;
 const FIRST_PLURAL: u8 = 8;
 const SECOND_PLURAL: u8 = 16;
 const THIRD_PLURAL: u8 = 32;
+const CONJUGATED: u8 = 63;
+const INFINITIVE: u8 = 64;
+const PAST_PARTICIPLE: u8 = 128;
 
 /// Words that may stand between a subject and its verb.
 const CLITICS: [&str; 18] = [
     "ne", "n'", "me", "m'", "te", "t'", "se", "s'", "le", "la", "les", "l'", "lui", "leur", "y", "en", "nous", "vous",
 ];
+/// Words that may stand between a verb and the verb form it calls for.
+const ADVERBS: [&str; 14] = [
+    "pas", "plus", "jamais", "encore", "bien", "mieux", "toujours", "déjà", "vraiment", "aussi", "même", "alors", "peut-être",
+    "souvent",
+];
+/// Forms that call for an infinitive: `il peut être`, `elle pourrait venir`.
+const MODALS: [&str; 44] = [
+    "peux", "peut", "pouvons", "pouvez", "peuvent", "pourrais", "pourrait", "pourrions", "pourriez", "pourraient", "dois",
+    "doit", "devons", "devez", "doivent", "devrais", "devrait", "devrions", "devriez", "devraient", "veux", "veut",
+    "voulons", "voulez", "veulent", "voudrais", "voudrait", "voudrions", "voudriez", "voudraient", "vais", "vas", "va",
+    "allons", "allez", "vont", "faut", "faudrait", "sais", "sait", "savons", "savez", "savent", "saurait",
+];
+/// Forms that call for a past participle: `j'ai mangé`, `a été optimisé`.
+const AUXILIARIES: [&str; 13] = [
+    "ai", "as", "a", "avons", "avez", "ont", "avais", "avait", "avions", "aviez", "avaient", "aurait", "été",
+];
+/// The clitics that make the next word a verb: `se baser`, `il se lève`.
+const REFLEXIVE: [&str; 2] = ["se", "s'"];
+
 /// Reward for a verb that agrees, and cost of a known word that cannot follow.
 const AGREES: f32 = 1.0;
 const DISAGREES: f32 = -1.0;
@@ -48,6 +70,25 @@ fn subject(history: &[String]) -> Option<u8> {
         }
     }
     found
+}
+
+/// Which verb forms `history` calls for, and which it rules out.
+fn expected_forms(history: &[String]) -> Option<(u8, u8)> {
+    let last = history.last()?.as_str();
+    if REFLEXIVE.contains(&last) {
+        return Some((CONJUGATED | INFINITIVE, u8::MAX));
+    }
+    let mut before = history.iter().rev().map(String::as_str).skip_while(|token| ADVERBS.contains(token));
+    let verb = before.next()?;
+    if AUXILIARIES.contains(&verb) {
+        return Some((PAST_PARTICIPLE, INFINITIVE));
+    }
+    let after_clitics = history
+        .iter()
+        .rev()
+        .map(String::as_str)
+        .find(|token| !ADVERBS.contains(token) && !CLITICS.contains(token))?;
+    MODALS.contains(&after_clitics).then_some((INFINITIVE, CONJUGATED | PAST_PARTICIPLE))
 }
 
 /// French word forms and the persons they conjugate, sorted in flat arrays so
@@ -103,10 +144,22 @@ impl Grammar {
     /// or for a word French does not know, such as `merge`, it is neutral.
     #[must_use]
     pub fn score(&self, history: &[String], word: &str) -> f32 {
+        let lower = word.to_lowercase();
+        if let Some((wanted, refused)) = expected_forms(history)
+            && !CLITICS.contains(&lower.as_str())
+            && !ADVERBS.contains(&lower.as_str())
+            && let Some(mask) = self.mask(&lower)
+        {
+            if mask & wanted != 0 {
+                return AGREES;
+            }
+            if mask & refused != 0 || refused == u8::MAX {
+                return DISAGREES;
+            }
+        }
         let Some(person) = subject(history) else {
             return 0.0;
         };
-        let lower = word.to_lowercase();
         // `je vous vois`: a clitic is as welcome after a subject as a verb.
         if CLITICS.contains(&lower.as_str()) {
             return AGREES;
@@ -149,6 +202,60 @@ mod tests {
     fn an_object_pronoun_does_not_replace_the_subject() {
         let grammar = Grammar::parse(FORMS);
         assert!(grammar.score(&history(&["il", "nous"]), "voit") > 0.0);
+    }
+
+    const VERBS: &str = "être\t64\nété\t128\nbaser\t64\nbasse\t0\nbasé\t128\nest\t4\ntemps\t0\nmanger\t64\nmangé\t128\nlève\t5\nchat\t0\n";
+
+    #[test]
+    fn a_modal_wants_an_infinitive() {
+        let grammar = Grammar::parse(VERBS);
+        for before in [&["il", "peut"][..], &["pourrait", "encore"], &["il", "ne", "peut", "pas"], &["on", "doit", "le"]] {
+            assert!(grammar.score(&history(before), "être") > 0.0, "{before:?}");
+            assert!(grammar.score(&history(before), "été") < 0.0, "{before:?}");
+            assert!(grammar.score(&history(before), "est") < 0.0, "{before:?}");
+        }
+    }
+
+    #[test]
+    fn an_auxiliary_wants_a_participle() {
+        let grammar = Grammar::parse(VERBS);
+        for before in [&["j'", "ai"][..], &["il", "a", "déjà"], &["a", "été"]] {
+            assert!(grammar.score(&history(before), "mangé") > 0.0, "{before:?}");
+            assert!(grammar.score(&history(before), "manger") < 0.0, "{before:?}");
+        }
+    }
+
+    #[test]
+    fn a_noun_after_an_auxiliary_stays_free() {
+        let grammar = Grammar::parse(VERBS);
+        assert!(grammar.score(&history(&["j'", "ai"]), "temps") >= 0.0);
+        assert!(grammar.score(&history(&["j'", "ai", "le"]), "temps").abs() < f32::EPSILON);
+        assert!(grammar.score(&history(&["j'", "ai", "le"]), "manger").abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_reflexive_wants_a_verb() {
+        let grammar = Grammar::parse(VERBS);
+        let before = history(&["de", "se"]);
+        assert!(grammar.score(&before, "baser") > 0.0);
+        assert!(grammar.score(&before, "lève") > 0.0);
+        assert!(grammar.score(&before, "basse") < 0.0);
+        assert!(grammar.score(&before, "basé") < 0.0);
+        assert!(grammar.score(&before, "merge").abs() < f32::EPSILON);
+        assert!(grammar.score(&before, "pas").abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_clitic_or_an_adverb_passes_after_a_modal() {
+        let grammar = Grammar::parse(VERBS);
+        assert!(grammar.score(&history(&["peut"]), "le").abs() < f32::EPSILON);
+        assert!(grammar.score(&history(&["peut"]), "bien").abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn nothing_is_expected_after_an_ordinary_word() {
+        assert_eq!(expected_forms(&history(&["le", "chat"])), None);
+        assert_eq!(expected_forms(&history(&[])), None);
     }
 
     #[test]

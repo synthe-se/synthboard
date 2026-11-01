@@ -130,7 +130,11 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         send(event)
     }
 
-    fun setEmoji(groups: List<Pair<String, List<EmojiItem>>>) = emojiGrid.setGroups(groups)
+    /** The emoji arrive after the panel opened, so what is on screen must be redrawn. */
+    fun setEmoji(groups: List<Pair<String, List<EmojiItem>>>) {
+        emojiGrid.setGroups(groups)
+        invalidate()
+    }
 
     fun setPanel(on: Boolean, recents: List<String>, tone: Int) {
         panelOpen = on
