@@ -1,0 +1,45 @@
+# What a stranger's clone can prove. Gradle and the APK stay out for now: they need the
+# generated assets and ONNX Runtime from the ignored `data/raw`, which no runner has.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Nothing here publishes or comments, so the token can only read.
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # rustup reads the pinned compiler from rust-toolchain.toml.
+      - run: rustup toolchain install
+      - run: rustup component add clippy
+      - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
+        with:
+          tool: cargo-deny,cargo-vet
+      - run: cargo test --workspace
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo deny check
+      - run: cargo vet --locked
+
+  fuzz-smoke:
+    runs-on: ubuntu-24.04
+    env:
+      # Short enough for every push. The long runs stay a local check in AGENTS.md.
+      FUZZ_SECONDS: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # cargo-fuzz needs nightly's sanitizer flags, for the fuzzing build alone.
+      - run: rustup toolchain install nightly --profile minimal
+      - run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - working-directory: fuzz
+        run: cargo +nightly fuzz run fuzz_engine -- -max_total_time="$FUZZ_SECONDS"
