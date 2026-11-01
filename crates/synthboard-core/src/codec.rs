@@ -176,12 +176,13 @@ pub trait Described {
 /// The wire tag of a variant: its position in the declaration.
 #[must_use]
 pub const fn tag_of(names: &[&str], name: &str) -> u8 {
+    let mut rest = names;
     let mut tag = 0;
-    while tag < names.len() {
-        #[allow(clippy::indexing_slicing, clippy::cast_possible_truncation)]
-        if names[tag].eq_ignore_ascii_case(name) {
-            return tag as u8;
+    while let [first, others @ ..] = rest {
+        if first.eq_ignore_ascii_case(name) {
+            return tag;
         }
+        rest = others;
         tag += 1;
     }
     0
@@ -298,7 +299,7 @@ mod tests {
         round_trip(&Step {
             commands: vec![
                 Command::Announce { text: "é".to_owned(), icon: Icon::Enter },
-                Command::SaveMemory { sealed: vec![0, 255] },
+                Command::Trace { record: "ab".to_owned() },
                 Command::EmojiPanel { on: true, recents: vec!["🙂".to_owned()] },
             ],
             deadline: Some(7),

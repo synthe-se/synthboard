@@ -4,6 +4,21 @@
 [cargo-vet]
 version = "0.10"
 
+[imports.bytecode-alliance]
+url = "https://raw.githubusercontent.com/bytecodealliance/wasmtime/main/supply-chain/audits.toml"
+
+[imports.google]
+url = "https://raw.githubusercontent.com/google/supply-chain/main/audits.toml"
+
+[imports.isrg]
+url = "https://raw.githubusercontent.com/divviup/libprio-rs/main/supply-chain/audits.toml"
+
+[imports.mozilla]
+url = "https://raw.githubusercontent.com/mozilla/supply-chain/main/audits.toml"
+
+[imports.zcash]
+url = "https://raw.githubusercontent.com/zcash/rust-ecosystem/main/supply-chain/audits.toml"
+
 [[exemptions.aead]]
 version = "0.6.1"
 criteria = "safe-to-deploy"
@@ -16,10 +31,6 @@ criteria = "safe-to-deploy"
 version = "1.0.5"
 criteria = "safe-to-deploy"
 
-[[exemptions.chacha20]]
-version = "0.10.2"
-criteria = "safe-to-deploy"
-
 [[exemptions.chacha20poly1305]]
 version = "0.11.0"
 criteria = "safe-to-deploy"
@@ -30,14 +41,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.cmov]]
 version = "0.5.4"
-criteria = "safe-to-deploy"
-
-[[exemptions.const-oid]]
-version = "0.10.2"
-criteria = "safe-to-deploy"
-
-[[exemptions.cpufeatures]]
-version = "0.3.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.crossbeam-deque]]
@@ -74,10 +77,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.either]]
 version = "1.19.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.fiat-crypto]]
-version = "0.3.0"
 criteria = "safe-to-deploy"
 
 [[exemptions.getrandom]]
@@ -124,36 +123,16 @@ criteria = "safe-to-deploy"
 version = "1.0.107"
 criteria = "safe-to-deploy"
 
-[[exemptions.quote]]
-version = "1.0.47"
-criteria = "safe-to-deploy"
-
 [[exemptions.r-efi]]
 version = "6.0.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.rand_core]]
-version = "0.10.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.rayon]]
 version = "1.12.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.rayon-core]]
-version = "1.13.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.rustc_version]]
-version = "0.4.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.ruzstd]]
 version = "0.9.1"
-criteria = "safe-to-deploy"
-
-[[exemptions.semver]]
-version = "1.0.28"
 criteria = "safe-to-deploy"
 
 [[exemptions.serde]]
@@ -176,20 +155,12 @@ criteria = "safe-to-deploy"
 version = "0.11.1"
 criteria = "safe-to-deploy"
 
-[[exemptions.subtle]]
-version = "2.6.1"
-criteria = "safe-to-deploy"
-
 [[exemptions.syn]]
 version = "2.0.119"
 criteria = "safe-to-deploy"
 
 [[exemptions.syn]]
 version = "3.0.9"
-criteria = "safe-to-deploy"
-
-[[exemptions.tinyvec]]
-version = "1.13.3"
 criteria = "safe-to-deploy"
 
 [[exemptions.twox-hash]]
@@ -204,24 +175,12 @@ criteria = "safe-to-deploy"
 version = "1.0.27"
 criteria = "safe-to-deploy"
 
-[[exemptions.unicode-normalization]]
-version = "0.1.26"
-criteria = "safe-to-deploy"
-
-[[exemptions.unicode-segmentation]]
-version = "1.13.3"
-criteria = "safe-to-deploy"
-
 [[exemptions.universal-hash]]
 version = "0.6.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.x25519-dalek]]
 version = "3.0.0"
-criteria = "safe-to-deploy"
-
-[[exemptions.zeroize]]
-version = "1.9.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.zeroize_derive]]

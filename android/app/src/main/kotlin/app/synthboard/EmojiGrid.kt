@@ -12,6 +12,7 @@ import android.widget.OverScroller
 import app.synthboard.core.EmojiItem
 import app.synthboard.core.Event
 import app.synthboard.core.Icon
+import app.synthboard.core.LETTERS_LABEL
 
 /**
  * The scrolling emoji panel inside the keyboard view. Long press relies on
@@ -260,7 +261,7 @@ class EmojiGrid(
     private fun drawStrip(canvas: Canvas) {
         val slot = width.toFloat() / stripSlots()
         val center = gridBottom() + strip / 2
-        val text = "ABC"
+        val text = LETTERS_LABEL
         val textWidth = labelPaint.measureText(text)
         canvas.drawText(text, slot / 2 - textWidth / 2, center - (labelPaint.descent() + labelPaint.ascent()) / 2, labelPaint)
         groups.forEachIndexed { index, (_, items) ->

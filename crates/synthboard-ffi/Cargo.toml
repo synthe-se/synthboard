@@ -13,3 +13,6 @@ zeroize = "1.9.1"
 synthboard-core = { path = "../synthboard-core" }
 synthboard-seal = { path = "../synthboard-seal" }
 synthswipe = { path = "../synthswipe" }
+
+[lints]
+workspace = true

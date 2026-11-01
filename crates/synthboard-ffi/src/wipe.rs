@@ -1,7 +1,7 @@
 //! Wipes every block of native memory as it is freed. Memory tagging turns off
-//! the zeroing hardened_malloc would do, and text passes through too many short
+//! the zeroing `hardened_malloc` would do, and text passes through too many short
 //! copies to chase one by one, so the allocator is the one place that sees them
-//! all. It wraps the system allocator: hardened_malloc still does the real work.
+//! all. It wraps the system allocator: `hardened_malloc` still does the real work.
 
 use std::alloc::{GlobalAlloc, Layout};
 use std::hint::black_box;

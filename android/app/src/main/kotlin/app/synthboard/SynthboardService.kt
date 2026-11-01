@@ -47,6 +47,7 @@ class SynthboardService : InputMethodService() {
     private var haptics = true
 
     private var readable = false
+    private val hasTraceKey by lazy { Settings.hasTraceKey(this) }
 
     private fun preferences(): SharedPreferences = getSharedPreferences(Settings.FILE, MODE_PRIVATE)
 
@@ -54,7 +55,7 @@ class SynthboardService : InputMethodService() {
 
     /** The sealed trace. It only exists in a build holding an owner's key. */
     private fun traceFile(): File? = preferences()
-        .takeIf { Settings.hasTraceKey(this) && it.getBoolean(Settings.TRACES, true) }
+        .takeIf { hasTraceKey && it.getBoolean(Settings.TRACES, true) }
         ?.let { File(filesDir, TraceProvider.FILE) }
 
     private fun readAsset(name: String): ByteArray = assets.open(name).use { it.readBytes() }
@@ -159,6 +160,7 @@ class SynthboardService : InputMethodService() {
         view?.showTrail = saved.getBoolean(Settings.TRAIL, true)
         send(Event.HeightScale(saved.getInt(Settings.HEIGHT, Settings.FULL_HEIGHT) / Settings.FULL_HEIGHT.toFloat()))
         send(Event.Alphabet(saved.getBoolean(Settings.QWERTY, false)))
+        send(Event.Screenshots(saved.getBoolean(Settings.SCREENSHOTS, false)))
     }
 
     private fun writeFile(target: File, bytes: ByteArray) {
@@ -171,9 +173,12 @@ class SynthboardService : InputMethodService() {
         check(temporary.renameTo(target))
     }
 
-    /** The memory arrives sealed to a public key, so this works on a locked phone. */
-    private fun saveMemory(sealed: ByteArray) {
-        Core.onIo { writeFile(personalFile(Settings.MEMORY_FILE), sealed) }
+    /** Rust seals to a public key, so this works on a locked phone. */
+    private fun saveMemory() {
+        Core.onIo {
+            val sealed = keyboard.sealMemory()
+            if (sealed.isNotEmpty()) writeFile(personalFile(Settings.MEMORY_FILE), sealed)
+        }
     }
 
     private fun appendTrace(record: String) {
@@ -205,8 +210,11 @@ class SynthboardService : InputMethodService() {
         return root
     }
 
-    override fun onCreateInlineSuggestionsRequest(uiExtras: Bundle): InlineSuggestionsRequest =
-        InlineStrip.request(this)
+    override fun onCreateInlineSuggestionsRequest(uiExtras: Bundle): InlineSuggestionsRequest? {
+        var request: InlineSuggestionsRequest? = null
+        guarded { request = InlineStrip.request(this) }
+        return request
+    }
 
     override fun onInlineSuggestionsResponse(response: InlineSuggestionsResponse): Boolean {
         guarded { strip?.inflate(response.inlineSuggestions) }
@@ -237,7 +245,6 @@ class SynthboardService : InputMethodService() {
             applySettings()
             val field = Field(info.inputType.toUInt(), info.imeOptions.toUInt())
             readable = keyboard.mayRead(field)
-            protectScreen(!readable || !preferences().getBoolean(Settings.SCREENSHOTS, false))
             val before = if (readable) textBeforeCursor() else ""
             val after = if (readable) textAfterCursor() else ""
             send(Event.Shown(field, before, after, info.initialSelEnd.coerceAtLeast(0).toUInt()))
@@ -297,7 +304,9 @@ class SynthboardService : InputMethodService() {
             is Command.DeleteBefore -> connection?.deleteSurroundingText(command.units.toInt(), 0)
             is Command.Select -> connection?.setSelection(command.start.toInt(), command.end.toInt())
             is Command.DeleteSelection -> connection?.commitText("", 1)
-            is Command.Enter -> enter()
+            is Command.NewLine -> sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER)
+            is Command.EditorAction -> connection?.performEditorAction(command.action.toInt())
+            is Command.ProtectScreen -> protectScreen(command.on)
             is Command.Picker -> getSystemService(InputMethodManager::class.java).showInputMethodPicker()
             is Command.Vibrate -> vibrate(command.kind)
             is Command.Keys -> {
@@ -317,7 +326,7 @@ class SynthboardService : InputMethodService() {
                 strip?.setCovered(command.on)
             }
             is Command.EmojiSearch -> view?.setSearch(command.on, command.query, command.results)
-            is Command.SaveMemory -> saveMemory(command.sealed)
+            is Command.SaveMemory -> saveMemory()
             is Command.Trace -> appendTrace(command.record)
             is Command.SaveRecents ->
                 preferences().edit().putString(Settings.RECENTS, command.items.joinToString(" ")).apply()
@@ -331,17 +340,6 @@ class SynthboardService : InputMethodService() {
         Icon.ENTER -> getString(R.string.key_enter)
         Icon.EMOJI -> getString(R.string.key_emoji)
         Icon.NONE -> command.text.ifEmpty { getString(R.string.key_space) }
-    }
-
-    private fun enter() {
-        val info = currentInputEditorInfo ?: return
-        val action = info.imeOptions and EditorInfo.IME_MASK_ACTION
-        val noAction = info.imeOptions and EditorInfo.IME_FLAG_NO_ENTER_ACTION != 0
-        if (noAction || action == EditorInfo.IME_ACTION_NONE || action == EditorInfo.IME_ACTION_UNSPECIFIED) {
-            sendDownUpKeyEvents(KeyEvent.KEYCODE_ENTER)
-        } else {
-            currentInputConnection?.performEditorAction(action)
-        }
     }
 
     private fun vibrate(kind: Haptic) {

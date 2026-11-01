@@ -1,4 +1,4 @@
-//! Keyboards described as data. Adding a layout never needs code.
+//! Keyboards described as data: a new layout is its rows and one name here.
 
 use synthswipe::{Key as DecoderKey, Layout};
 
@@ -156,12 +156,16 @@ fn parse_token(token: &str) -> (Option<Action>, String, f32) {
         "emoji" => (Some(Action::Emoji), "☺"),
         "sym" => (Some(Action::Layer(Layer::Symbols)), "?123"),
         "more" => (Some(Action::Layer(Layer::MoreSymbols)), "=\\<"),
-        "abc" => (Some(Action::Layer(Layer::Alpha)), "ABC"),
+        "abc" => (Some(Action::Layer(Layer::Alpha)), LETTERS_LABEL),
         text => (Some(Action::Text(text.to_owned())), text),
     };
     (action, label.to_owned(), width)
 }
 
+/// The key that goes back to letters, in every language.
+pub const LETTERS_LABEL: &str = "ABC";
+/// Height of the accent popup. Taken from Gboard, like the rows.
+pub const POPUP_HEIGHT_DP: f32 = 52.8;
 /// Keys in a row of the digit pads.
 const DIGIT_COLUMNS: f32 = 4.0;
 /// Keys in the widest row of letters.

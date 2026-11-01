@@ -17,6 +17,7 @@ import app.synthboard.core.DrawnKey
 import app.synthboard.core.EmojiItem
 import app.synthboard.core.Event
 import app.synthboard.core.Icon
+import app.synthboard.core.POPUP_HEIGHT_DP
 import app.synthboard.core.SEARCH_CELLS
 import app.synthboard.core.SLOT_CENTERS
 
@@ -440,7 +441,6 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         const val CLEAR_CROSS_SHARE = 0.25f
         const val LOCK_BAR_SHARE = 0.33f
         const val LOCK_BAR_DROP = 0.62f
-        const val POPUP_HEIGHT_DP = 52.8f
         const val TRAIL_DP = 8f
         const val TRAIL_ALPHA = 216
         const val TRAIL_FADE_MS = 300L

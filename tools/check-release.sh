@@ -47,6 +47,8 @@ cd "$root"
 elsewhere=$(grep -rlE '\bunsafe\b' crates --include='*.rs' | grep -vE 'crates/synthboard-ffi/src/(jni|wipe|lib)\.rs' || true)
 [ -z "$elsewhere" ] || fail "unsafe code outside the two files allowed: $elsewhere"
 ! grep -rqE 'std::net|java\.net' crates android/app/src || fail "network code"
+[ -f android/gradle/verification-metadata.xml ] || fail "Gradle dependencies are not verified"
+grep -q distributionSha256Sum android/gradle/wrapper/gradle-wrapper.properties || fail "the Gradle distribution is not pinned"
 cargo deny check
 cargo vet --locked
 cargo audit -q

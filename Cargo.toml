@@ -8,7 +8,9 @@ edition = "2024"
 publish = false
 
 [workspace.lints.rust]
-unsafe_code = "forbid"
+# Deny, not forbid: two reviewed modules of synthboard-ffi may allow it. Every
+# other crate forbids it in its own root.
+unsafe_code = "deny"
 missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]

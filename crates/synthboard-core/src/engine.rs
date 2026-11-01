@@ -11,12 +11,16 @@ use zeroize::Zeroize;
 use crate::emoji::Catalog;
 use crate::memory::Memory;
 use crate::predict::{NextWords, mail_domains};
-use crate::board::{Action, Alphabet, BAR_DP, Board, Layer, Purpose, Screen, popup_of};
+use crate::board::{Action, Alphabet, BAR_DP, Board, Layer, POPUP_HEIGHT_DP, Purpose, Screen, popup_of};
 use crate::wire::{Command, DrawnKey, Haptic, Icon};
 
 /// Android `InputType` and `EditorInfo` constants used for field rules.
 mod android {
     pub const CLASS_MASK: u32 = 0xf;
+    pub const ACTION_MASK: u32 = 0xff;
+    pub const ACTION_UNSPECIFIED: u32 = 0;
+    pub const ACTION_NONE: u32 = 1;
+    pub const NO_ENTER_ACTION: u32 = 0x4000_0000;
     pub const CLASS_TEXT: u32 = 1;
     pub const CLASS_NUMBER: u32 = 2;
     pub const CLASS_PHONE: u32 = 3;
@@ -36,27 +40,42 @@ mod android {
     pub const NO_PERSONALIZED_LEARNING: u32 = 0x100_0000;
 }
 
+/// How far a finger may drift and still be a tap, in key pitches. Low, so that
+/// a swipe starts on its first letter.
 const SLOP_KEYS: f32 = 0.5;
+/// After a key, a tap within this time gets a wider slop: fast typing is loose.
 const FAST_TAP_MS: u64 = 500;
 const FAST_TAP_SPAN_MS: f32 = 450.0;
 const FAST_TAP_SLOP_KEYS: f32 = 2.0;
+/// The default long press of `HeliBoard`.
 const LONG_PRESS_MS: u64 = 300;
+/// Space and shift wait 1.5 times longer, as in `HeliBoard`: they get held while typing.
 const MENU_PRESS_MS: u64 = 450;
+/// AOSP's key repeat: first delay, then interval.
 const DELETE_DELAY_MS: u64 = 400;
 const DELETE_REPEAT_MS: u64 = 50;
 /// Letters a held backspace removes before it goes word by word.
 const DELETE_LETTERS: u32 = 2;
+/// Slower than letters: a word is too much to lose to one extra repeat.
 const DELETE_WORD_REPEAT_MS: u64 = 120;
+/// The two taps of a caps lock.
 const DOUBLE_TAP_MS: u64 = 300;
+/// The double space that writes a period, as in AOSP.
 const DOUBLE_SPACE_MS: u64 = 1100;
+/// Distance per cursor step when dragging on the space bar, then when going fast.
 const CURSOR_STEP_DP: f32 = 10.0;
 const FAST_CURSOR_DP: f32 = 24.0;
+/// Distance before a drag from backspace starts selecting, then per word.
 const DELETE_SWIPE_DP: f32 = 16.0;
 const DELETE_WORD_DP: f32 = 20.0;
+/// Size of a popup item, and how far above the key the popup opens.
 const POPUP_ITEM_DP: f32 = 44.0;
 const POPUP_LIFT_DP: f32 = 58.0;
-const POPUP_BAND_DP: f32 = 63.36;
+/// How far around the popup a finger still counts as being in it.
+const POPUP_BAND_DP: f32 = POPUP_HEIGHT_DP * 1.2;
+/// Candidates kept from a decode: one more than the bar, for the word that gets filtered.
 const SUGGESTIONS: usize = 4;
+/// Recent emoji kept for the panel.
 const MAX_RECENTS: usize = 32;
 /// Emoji results in the search row. The shell draws from this same number.
 pub const SEARCH_CELLS: usize = 8;
@@ -85,8 +104,10 @@ const SECRET_KEY: &str = "•";
 const MIRROR_BYTES: usize = 4096;
 /// How close a new gesture must be to a deleted one to be a second try, in key pitches.
 const RETRY_REACH: f32 = 0.6;
-const FRENCH: u8 = 1;
-const ENGLISH: u8 = 2;
+/// The two languages of the lexicon's third column, as bits. Which languages
+/// they are is the data's business: `tools/pack-lexicon.sh` decides.
+const FIRST_LANGUAGE: u8 = 1;
+const SECOND_LANGUAGE: u8 = 2;
 /// Evidence kept from one word to the next.
 const LANGUAGE_MEMORY: f32 = 0.8;
 const LANGUAGE_LIMIT: f32 = 3.0;
@@ -142,6 +163,18 @@ impl Field {
         }
     }
 
+    /// What Enter does here: the field's action, or a plain new line.
+    fn enter(self) -> Command {
+        let action = self.ime_options & android::ACTION_MASK;
+        if self.ime_options & android::NO_ENTER_ACTION != 0
+            || matches!(action, android::ACTION_UNSPECIFIED | android::ACTION_NONE)
+        {
+            Command::NewLine
+        } else {
+            Command::EditorAction { action }
+        }
+    }
+
     fn is_text(self) -> bool {
         self.input_type & android::CLASS_MASK == android::CLASS_TEXT
     }
@@ -171,7 +204,7 @@ impl Field {
     }
 
     fn allows_auto_spacing(self) -> bool {
-        self.is_text() && !self.is_password() && !self.is_address()
+        self.allows_gestures() && !self.is_address()
     }
 
     fn allows_suggestions(self) -> bool {
@@ -235,8 +268,10 @@ crate::wire_enum! {
         OpenEmojiSearch,
         /// The emoji panel was closed from inside.
         CloseEmojiPanel,
-    /// The user's choice of letter layout.
-    Alphabet { qwerty: bool },
+        /// The user's choice of letter layout.
+        Alphabet { qwerty: bool },
+        /// Whether the user allows screenshots of the keyboard.
+        Screenshots { allowed: bool },
     }
 }
 
@@ -363,6 +398,9 @@ pub struct Engine {
     pending: Option<Pending>,
     retry: Option<Retry>,
     held: Held,
+    screenshots: bool,
+    /// Memory waiting to be sealed, with the key to seal it to.
+    unsaved: Option<(Arc<Memory>, [u8; KEY_BYTES])>,
     /// The shift state when the current word began.
     word_shift: Shift,
     undo: Option<String>,
@@ -462,12 +500,13 @@ fn opens_sentence(before: &str) -> bool {
 }
 
 /// English first-person forms take a capital wherever they stand.
-fn is_english_i(word: &str) -> bool {
+/// Words the bar always writes with a capital, whatever the shift says.
+fn always_capital(word: &str) -> bool {
     matches!(word, "i" | "i'm" | "i'll" | "i've" | "i'd" | "i’m" | "i’ll" | "i’ve" | "i’d")
 }
 
 fn cased(shift: Shift, word: &str) -> String {
-    if shift == Shift::Off && is_english_i(word) {
+    if shift == Shift::Off && always_capital(word) {
         return title_case(word);
     }
     match shift {
@@ -560,8 +599,8 @@ impl Decoding {
 /// How the session's language tilts a word: only a word of one language moves.
 fn language_tilt(languages: u8, leaning: f32) -> f32 {
     match languages {
-        FRENCH => LANGUAGE_TILT * leaning,
-        ENGLISH => -LANGUAGE_TILT * leaning,
+        FIRST_LANGUAGE => LANGUAGE_TILT * leaning,
+        SECOND_LANGUAGE => -LANGUAGE_TILT * leaning,
         _ => 0.0,
     }
 }
@@ -598,6 +637,8 @@ impl Engine {
             pending: None,
             retry: None,
             held: Held::Nothing,
+            screenshots: false,
+            unsaved: None,
             word_shift: Shift::default(),
             undo: None,
             memory_changed: false,
@@ -637,29 +678,25 @@ impl Engine {
         }
     }
 
-    /// Provides the lexicon. Taps work before it arrives (X-9).
+    /// Taps work before the lexicon arrives (X-9).
     pub fn set_lexicon(&mut self, lexicon: Arc<Lexicon>) {
         self.lexicon = Some(lexicon);
     }
 
-    /// Provides the context table and the next-word list.
     pub fn set_language(&mut self, affinities: Arc<Affinities>, grammar: Arc<Grammar>, next_words: Arc<NextWords>) {
         self.affinities = Some(affinities);
         self.grammar = Some(grammar);
         self.next_words = Some(next_words);
     }
 
-    /// Allows traces, sealed for the owner of this public key.
     pub fn set_trace_key(&mut self, key: [u8; KEY_BYTES]) {
         self.trace_key = Some(key);
     }
 
-    /// Sets the public key that memory is sealed to.
     pub fn set_memory_key(&mut self, key: [u8; KEY_BYTES]) {
         self.memory_key = Some(key);
     }
 
-    /// Provides the emoji catalogue.
     pub fn set_catalog(&mut self, catalog: Arc<Catalog>) {
         self.catalog = Some(catalog);
     }
@@ -691,7 +728,6 @@ impl Engine {
         engine
     }
 
-    /// Handles one event.
     pub fn step(&mut self, event: Event) -> Step {
         match event {
             Event::Resize { width, screen_height, density } => {
@@ -715,6 +751,7 @@ impl Engine {
                 }
                 self.memory_key = None;
                 self.memory_changed = false;
+                self.unsaved = None;
                 self.pending = None;
                 self.retry = None;
                 self.last_word = None;
@@ -728,6 +765,7 @@ impl Engine {
                 self.shown(field, before, cursor);
             }
             Event::Hidden => self.hidden(),
+            Event::Screenshots { allowed } => self.screenshots = allowed,
             Event::Alphabet { qwerty } => {
                 let alphabet = if qwerty { Alphabet::Qwerty } else { Alphabet::Azerty };
                 if alphabet != self.alphabet {
@@ -833,6 +871,7 @@ impl Engine {
         self.retry = None;
         self.failed_gesture = None;
         self.field = field;
+        self.out.push(Command::ProtectScreen { on: !self.screenshots || !field.allows_reading() });
         self.leaning = LANGUAGE_START;
         replace_wiped(&mut self.before, if field.allows_reading() { before } else { String::new() });
         if self.held == Held::Nothing {
@@ -858,9 +897,7 @@ impl Engine {
         self.save_memory();
         self.release_memory();
         self.forget_text();
-        if self.search.take().is_some() {
-            self.out.push(Command::EmojiSearch { on: false, query: String::new(), results: Vec::new() });
-        }
+        self.close_search();
         self.out.push(Command::EmojiPanel { on: false, recents: Vec::new() });
     }
 
@@ -1049,8 +1086,8 @@ impl Engine {
     fn update_leaning(&mut self, word: &str) {
         let languages = self.lexicon.as_ref().map_or(0, |lexicon| lexicon.languages(word));
         let evidence = match languages {
-            FRENCH => 1.0,
-            ENGLISH => -1.0,
+            FIRST_LANGUAGE => 1.0,
+            SECOND_LANGUAGE => -1.0,
             _ => return,
         };
         self.leaning = (self.leaning * LANGUAGE_MEMORY + evidence).clamp(-LANGUAGE_LIMIT, LANGUAGE_LIMIT);
@@ -1096,15 +1133,17 @@ impl Engine {
     }
 
     fn save_memory(&mut self) {
-        let Some(key) = self.memory_key.filter(|_| self.memory_changed && self.held == Held::Everything) else {
-            return;
-        };
-        let mut text = self.memory.to_text();
-        if let Ok(sealed) = synthboard_seal::seal(&key, text.as_bytes()) {
+        if let Some(key) = self.memory_key.filter(|_| self.memory_changed && self.held == Held::Everything) {
             self.memory_changed = false;
-            self.out.push(Command::SaveMemory { sealed });
+            self.unsaved = Some((Arc::clone(&self.memory), key));
+            self.out.push(Command::SaveMemory);
         }
-        text.zeroize();
+    }
+
+    /// Hands over memory to seal. Sealing it all takes time, so the shell does
+    /// this away from the typing thread, and only the latest copy counts.
+    pub fn take_unsaved(&mut self) -> Option<(Arc<Memory>, [u8; KEY_BYTES])> {
+        self.unsaved.take()
     }
 
     /// Fills the bar with what comes next, or empties it inside a word.
@@ -1518,7 +1557,7 @@ impl Engine {
             Action::Enter => {
                 self.end_word();
                 self.clear_suggestions();
-                self.out.push(Command::Enter);
+                self.out.push(self.field.enter());
             }
             Action::Layer(layer) => {
                 self.layer = layer;
@@ -2290,19 +2329,12 @@ mod tests {
         engine: Engine,
         text: String,
         t: u64,
-        memory_secret: [u8; 32],
     }
 
     impl Rig {
-        /// What a step saved, opened as the phone would open it.
-        fn saved(&self, step: &Step) -> Option<String> {
-            step.commands.iter().find_map(|command| match command {
-                Command::SaveMemory { sealed } => {
-                    let plain = synthboard_seal::open(&self.memory_secret, sealed).unwrap();
-                    Some(String::from_utf8(plain).unwrap())
-                }
-                _ => None,
-            })
+        /// What a step saved.
+        fn saved(&mut self, step: &Step) -> Option<String> {
+            step.commands.contains(&Command::SaveMemory).then(|| self.engine.take_unsaved().unwrap().0.to_text())
         }
 
         fn new(field: Field) -> Self {
@@ -2319,9 +2351,8 @@ mod tests {
                 ("merge", 120.0),
                 ("merde", 160.0),
             ])));
-            let (memory_secret, memory_public) = synthboard_seal::generate_keys().unwrap();
-            engine.set_memory_key(memory_public);
-            let mut rig = Self { engine, text: String::new(), t: 10_000, memory_secret };
+            engine.set_memory_key([1; KEY_BYTES]);
+            let mut rig = Self { engine, text: String::new(), t: 10_000 };
             let step = rig.engine.step(Event::Shown { field, before: String::new(), after: String::new(), cursor: 0 });
             rig.apply(step);
             rig.engine.load_memory("");
@@ -2832,10 +2863,10 @@ mod tests {
     fn the_same_gesture_follows_the_sessions_language() {
         let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
         rig.engine.set_lexicon(Arc::new(Lexicon::with_languages([
-            ("il", 120.0, FRENCH),
-            ("i'll", 125.0, ENGLISH),
-            ("the", 180.0, ENGLISH),
-            ("what", 170.0, ENGLISH),
+            ("il", 120.0, FIRST_LANGUAGE),
+            ("i'll", 125.0, SECOND_LANGUAGE),
+            ("the", 180.0, SECOND_LANGUAGE),
+            ("what", 170.0, SECOND_LANGUAGE),
         ])));
         rig.swipe("il");
         assert_eq!(rig.text, "il");
@@ -3276,7 +3307,7 @@ mod tests {
     #[test]
     fn language_evidence_decays_and_stays_bounded() {
         let mut rig = plain_rig();
-        rig.engine.set_lexicon(Arc::new(Lexicon::with_languages([("the", 180.0, ENGLISH), ("le", 180.0, FRENCH), ("x", 1.0, 3)])));
+        rig.engine.set_lexicon(Arc::new(Lexicon::with_languages([("the", 180.0, SECOND_LANGUAGE), ("le", 180.0, FIRST_LANGUAGE), ("x", 1.0, 3)])));
         rig.engine.leaning = 1.0;
         rig.engine.update_leaning("the");
         assert!((rig.engine.leaning - (1.0 * LANGUAGE_MEMORY - 1.0)).abs() < 0.001);
@@ -3295,9 +3326,9 @@ mod tests {
 
     #[test]
     fn the_language_tilt_only_moves_words_of_one_language() {
-        assert!(language_tilt(FRENCH, 2.0) > 0.0);
-        assert!(language_tilt(ENGLISH, 2.0) < 0.0);
-        assert!(language_tilt(FRENCH | ENGLISH, 2.0).abs() < f32::EPSILON);
+        assert!(language_tilt(FIRST_LANGUAGE, 2.0) > 0.0);
+        assert!(language_tilt(SECOND_LANGUAGE, 2.0) < 0.0);
+        assert!(language_tilt(FIRST_LANGUAGE | SECOND_LANGUAGE, 2.0).abs() < f32::EPSILON);
         assert!(language_tilt(0, 2.0).abs() < f32::EPSILON);
     }
 
@@ -3443,21 +3474,40 @@ mod tests {
         rig.send(Event::Shown { field: rig.engine.field, before: String::new(), after: String::new(), cursor: 0 });
         rig.swipe("bonjour");
         let step = rig.send(Event::Hidden);
-        assert!(!step.commands.iter().any(|c| matches!(c, Command::SaveMemory { .. })));
+        assert!(!step.commands.iter().any(|c| matches!(c, Command::SaveMemory)));
     }
 
     #[test]
-    fn memory_saves_without_any_secret_and_never_in_the_clear() {
+    fn enter_runs_the_fields_action_or_starts_a_line() {
+        let of = |ime_options| Field { input_type: android::CLASS_TEXT, ime_options }.enter();
+        assert_eq!(of(0), Command::NewLine);
+        assert_eq!(of(android::ACTION_NONE), Command::NewLine);
+        assert_eq!(of(3), Command::EditorAction { action: 3 });
+        assert_eq!(of(3 | android::NO_ENTER_ACTION), Command::NewLine);
+    }
+
+    #[test]
+    fn the_screen_is_protected_unless_allowed_and_always_for_a_secret() {
+        let mut rig = plain_rig();
+        let text = rig.engine.field;
+        let secret = Field { input_type: android::CLASS_TEXT | android::PASSWORD, ime_options: 0 };
+        let shown = |rig: &mut Rig, field| {
+            rig.send(Event::Shown { field, before: String::new(), after: String::new(), cursor: 0 })
+        };
+        assert!(shown(&mut rig, text).commands.contains(&Command::ProtectScreen { on: true }));
+        rig.send(Event::Screenshots { allowed: true });
+        assert!(shown(&mut rig, text).commands.contains(&Command::ProtectScreen { on: false }));
+        assert!(shown(&mut rig, secret).commands.contains(&Command::ProtectScreen { on: true }));
+    }
+
+    #[test]
+    fn a_later_save_replaces_one_not_yet_sealed() {
         let mut rig = plain_rig();
         rig.swipe("bonjour");
+        rig.swipe("bonsoir");
         let step = rig.send(Event::Hidden);
-        let Some(Command::SaveMemory { sealed }) =
-            step.commands.iter().find(|c| matches!(c, Command::SaveMemory { .. }))
-        else {
-            unreachable!("the word was kept");
-        };
-        assert!(!sealed.windows(7).any(|window| window == b"bonjour"));
-        assert!(rig.saved(&step).unwrap().contains("bonjour"));
+        assert!(rig.saved(&step).unwrap().contains("bonsoir"));
+        assert!(rig.engine.take_unsaved().is_none());
     }
 
     #[test]
@@ -3629,6 +3679,57 @@ mod tests {
     }
 
     #[test]
+    fn a_recovered_engine_keeps_all_it_was_configured_with() {
+        let mut rig = plain_rig();
+        rig.engine.set_trace_key([2; KEY_BYTES]);
+        rig.engine.affinities = Some(Arc::new(Affinities::from_bytes(&[])));
+        rig.engine.grammar = Some(Arc::new(Grammar::parse("")));
+        rig.engine.next_words = Some(Arc::new(NextWords::parse("")));
+        rig.engine.catalog = Some(Arc::new(Catalog::parse("")));
+        rig.engine.height_scale = 1.1;
+        rig.send(Event::Alphabet { qwerty: true });
+        let engine = rig.engine.recovered();
+        assert_eq!(engine.trace_key, Some([2; KEY_BYTES]));
+        assert_eq!(engine.memory_key, Some([1; KEY_BYTES]));
+        assert_eq!(engine.alphabet, Alphabet::Qwerty);
+        assert!((engine.height_scale - 1.1).abs() < f32::EPSILON);
+        assert!(engine.affinities.is_some() && engine.grammar.is_some());
+        assert!(engine.next_words.is_some() && engine.catalog.is_some());
+    }
+
+    #[test]
+    fn a_gesture_fits_a_word_only_at_both_ends() {
+        let rig = plain_rig();
+        let at = |label: &str| {
+            let (x, y) = rig.center(label);
+            Sample { x, y, t_ms: 0 }
+        };
+        assert!(rig.engine.gesture_fits("bon", &[at("b"), at("n")]));
+        assert!(!rig.engine.gesture_fits("sel", &[at("b"), at("l")]));
+        assert!(!rig.engine.gesture_fits("bon", &[at("b"), at("a")]));
+        assert!(!rig.engine.gesture_fits("non", &[at("a"), at("n")]));
+    }
+
+    #[test]
+    fn a_tapped_word_in_a_capitalising_field_learns_no_capital() {
+        let field = Field { input_type: android::CLASS_TEXT | android::CAP_WORDS, ime_options: 0 };
+        let mut rig = Rig::new(field);
+        rig.send(Event::Text { text: "voir ".to_owned() });
+        type_word(&mut rig, "chat");
+        rig.tap_at(rig.space());
+        rig.send(Event::Hidden);
+        assert_eq!(rig.engine.memory.form("chat"), "chat");
+    }
+
+    #[test]
+    fn erasing_while_hidden_leaves_nothing_held() {
+        let mut rig = plain_rig();
+        rig.send(Event::Hidden);
+        rig.send(Event::ForgetAll);
+        assert_eq!(rig.engine.held, Held::Nothing);
+    }
+
+    #[test]
     fn a_recovered_engine_can_type() {
         let mut rig = plain_rig();
         let mut engine = rig.engine.recovered();
@@ -3760,20 +3861,29 @@ mod tests {
         assert_eq!(rig.text, "than ");
     }
 
-    #[test]
-    fn a_refused_correction_stays_refused_in_later_sessions() {
-        let mut rig = plain_rig();
-        type_word(&mut rig, "yhan");
+    fn refuse_once(rig: &mut Rig) {
+        type_word(rig, "yhan");
         rig.tap_at(rig.space());
         assert!(rig.text.contains("than"), "{}", rig.text);
         rig.tap("⌫");
         assert!(rig.text.contains("yhan"), "{}", rig.text);
+    }
+
+    fn reopen(rig: &mut Rig) {
         let saved = rig.engine.memory.to_text();
-        assert!(saved.contains("yhan"));
         rig.send(Event::Hidden);
         rig.text.clear();
         rig.send(Event::Shown { field: rig.engine.field, before: String::new(), after: String::new(), cursor: 0 });
         rig.engine.load_memory(&saved);
+    }
+
+    #[test]
+    fn a_word_refused_twice_stays_for_good() {
+        let mut rig = plain_rig();
+        refuse_once(&mut rig);
+        reopen(&mut rig);
+        refuse_once(&mut rig);
+        reopen(&mut rig);
         type_word(&mut rig, "yhan");
         rig.tap_at(rig.space());
         assert!(rig.text.contains("yhan"), "{}", rig.text);
@@ -3874,7 +3984,7 @@ mod tests {
         assert_eq!(rig.engine.memory.next_after("bonjour"), ["bonsoir"]);
         rig.send(Event::Hidden);
         let step = rig.engine.step(Event::Hidden);
-        assert!(step.commands.iter().all(|c| !matches!(c, Command::SaveMemory { .. })));
+        assert!(step.commands.iter().all(|c| !matches!(c, Command::SaveMemory)));
     }
 
     #[test]

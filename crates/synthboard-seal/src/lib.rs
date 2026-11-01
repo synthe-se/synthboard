@@ -3,6 +3,8 @@
 //! cannot read it back: only the holder of the owner's secret key can. Anyone
 //! who later takes the phone apart finds nothing but ciphertext.
 
+#![forbid(unsafe_code)]
+
 use hpke::aead::ChaCha20Poly1305 as Suite;
 use hpke::kdf::HkdfSha256;
 use hpke::kem::X25519HkdfSha256;

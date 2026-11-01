@@ -47,7 +47,7 @@ The keyboard declares no permission and contains no network code. `tools/check-r
 - Android: memory tagging on, heap zeroed at allocation, no backups, no cleartext traffic, `FLAG_SECURE` on the keyboard by default, obscured touches filtered, accessibility data limited to real accessibility tools, no Direct Boot, so the bundled keyboard handles the passphrase before the first unlock.
 - Rust: `unsafe_code` forbidden everywhere but `crates/synthboard-ffi/src/jni.rs`, three short functions that move bytes, and `wipe.rs`, an allocator that zeroes freed blocks, overflow checks on in release, panics stopped at the FFI boundary and silenced, because a panic message could quote what was typed. `panic = "unwind"` is deliberate.
 - Boundary: messages travel in direct buffers. On Android these live in the Java heap as non-movable arrays, so the garbage collector leaves no stray copy, and they are wiped after each call. A hand-written codec in safe Rust bounds every length and validates all text, with Kotlin generated from the Rust types with no procedural macro. `fuzz_wire` feeds it hostile bytes.
-- Supply chain: `cargo deny`, `cargo vet` and `cargo audit` in the release checks. Any version bump of a crypto crate means reading its diff.
+- Supply chain: `cargo deny`, `cargo vet` and `cargo audit` in the release checks. Any version bump of a crypto crate means reading its diff. Gradle verifies every dependency against `android/gradle/verification-metadata.xml`, and the wrapper checks the distribution's hash.
 
 ## Known limits
 
@@ -55,8 +55,7 @@ The keyboard declares no permission and contains no network code. `tools/check-r
 - Suggestions, previews, forget bubbles and search queries are drawn by Kotlin, so learned words exist as Java strings while shown, and the last ones stay until replaced.
 - Memory tagging disables hardened_malloc's zeroing on free. Tagging is kept because it stops an exploit inside the process from reaching freed bytes, and because this process handles text from other apps. `wipe.rs` restores the zeroing for native memory. The Java heap has neither.
 - Copies on the native stack are not wiped.
-- `cargo vet` exempts every crate: it makes updates deliberate, but nothing has been audited.
-- Gradle plugins and the distribution have no integrity check.
+- `cargo vet` still exempts the crates no trusted organisation has audited at these versions, and imported audits cover the rest. Any update must pass again.
 - A forged trace record can only pollute statistics: ingestion drops lines that could break the tools.
 - `FLAG_SECURE` was verified on the phone with a capture, and is not covered by a test.
 

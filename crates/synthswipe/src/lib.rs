@@ -3,6 +3,8 @@
 //! This crate knows nothing about Android or any host. It takes a trajectory,
 //! a layout supplied at runtime and a lexicon, and returns ranked candidates.
 
+#![forbid(unsafe_code)]
+
 #![allow(clippy::cast_precision_loss, clippy::cast_possible_truncation, clippy::cast_sign_loss)]
 
 mod context;

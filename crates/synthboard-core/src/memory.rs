@@ -13,6 +13,7 @@ use synthswipe::{Lexicon, SENTENCE_START, signature_distance, tokens};
 const VALIDATIONS: u32 = 2;
 /// Weight of a learned word, about that of a fairly common word.
 const LEARNED_WEIGHT: f32 = 140.0;
+/// Bounds the file, and every save with it: years of a daily user's words fit well under.
 const MAX_ENTRIES: usize = 50_000;
 const SEPARATOR: char = '\t';
 const FORM_MARK: char = '^';
@@ -26,7 +27,9 @@ const PHRASE_USES: u32 = 2;
 const MAX_PHRASE_EXTRA: usize = 3;
 const BLOCK_MARK: char = '!';
 const TRACE_MARK: char = '~';
+/// The gestures kept as the user's own, each compared on every decode.
 const MAX_TRACES: usize = 500;
+/// Enough to cover how one word gets drawn, while older habits age out.
 const TRACES_PER_WORD: usize = 4;
 /// How close a gesture must be to a personal trace, in key pitches.
 const TRACE_REACH: f32 = 0.45;
@@ -45,6 +48,8 @@ pub struct Memory {
     words: HashMap<String, u32>,
     /// What followed each context of one to three words, with its count.
     pairs: HashMap<String, HashMap<String, u32>>,
+    /// How many pairs there are, so that learning a word needs no count of them.
+    pair_total: usize,
     /// Words the user writes with capitals, by their lowercase form.
     forms: HashMap<String, String>,
     /// Words the user asked to forget, lexicon words included.
@@ -92,6 +97,7 @@ impl Memory {
                 _ => {}
             }
         }
+        memory.count_pairs();
         memory.rebuild(known);
         memory
     }
@@ -132,19 +138,21 @@ impl Memory {
             .then(|| Arc::new(Lexicon::new(learned.into_iter().map(|word| (word, LEARNED_WEIGHT)))));
     }
 
-    /// Adopts a word at once: the user refused to have it corrected, which says
-    /// more than any count of uses.
+    /// Counts a refused correction as one use, so that refusing the same word
+    /// twice adopts it: one backspace can be a mere edit of the corrected word.
     pub fn keep(&mut self, word: &str, known: impl Fn(&str) -> bool) {
         let word = word.to_lowercase();
-        self.blocked.remove(&word);
-        let count = self.words.entry(word).or_default();
-        *count = (*count).max(VALIDATIONS);
-        self.rebuild(known);
+        let count = self.words.entry(word.clone()).or_default();
+        *count = count.saturating_add(1);
+        if *count >= VALIDATIONS {
+            self.blocked.remove(&word);
+            self.rebuild(known);
+        }
     }
 
     /// Records that `word` was validated after `previous`.
     pub fn learn(&mut self, previous: &str, word: &str, known: impl Fn(&str) -> bool) {
-        if self.words.len() + self.pairs.values().map(HashMap::len).sum::<usize>() >= MAX_ENTRIES {
+        if self.words.len() + self.pair_total >= MAX_ENTRIES {
             self.forget_rarest();
         }
         let count = self.words.entry(word.to_owned()).or_default();
@@ -159,6 +167,7 @@ impl Memory {
 
     fn bump(&mut self, context: String, word: &str) {
         let count = self.pairs.entry(context).or_default().entry(word.to_owned()).or_default();
+        self.pair_total += usize::from(*count == 0);
         *count = count.saturating_add(1);
     }
 
@@ -256,6 +265,7 @@ impl Memory {
             next.remove(&word);
             !next.is_empty() && !context.split(' ').any(|token| token == word)
         });
+        self.count_pairs();
         self.traces.retain(|(known, _)| *known != word);
         self.blocked.insert(word);
         self.rebuild(known);
@@ -267,11 +277,16 @@ impl Memory {
         self.blocked.contains(&word.to_lowercase())
     }
 
+    fn count_pairs(&mut self) {
+        self.pair_total = self.pairs.values().map(HashMap::len).sum();
+    }
+
     fn forget_rarest(&mut self) {
         self.pairs.retain(|_, next| {
             next.retain(|_, count| *count > 1);
             !next.is_empty()
         });
+        self.count_pairs();
         self.words.retain(|_, count| *count > 1);
     }
 
@@ -469,12 +484,25 @@ mod tests {
     }
 
     #[test]
-    fn a_kept_word_is_a_word_at_once_and_survives_saving() {
+    fn the_pair_count_follows_what_is_forgotten() {
+        let mut memory = Memory::default();
+        memory.learn("a", "b", |_| true);
+        memory.learn("a", "c", |_| true);
+        assert_eq!(memory.pair_total, 2);
+        memory.forget("c", |_| true);
+        assert_eq!(memory.pair_total, 1);
+        assert_eq!(Memory::parse(&memory.to_text(), |_| true).pair_total, 1);
+    }
+
+    #[test]
+    fn a_word_refused_twice_is_adopted_and_survives_saving() {
         let mut memory = Memory::default();
         memory.forget("synthe", |_| false);
         memory.keep("Synthe", |_| false);
+        assert!(memory.is_blocked("synthe"));
+        assert!(memory.extra_words().is_none());
+        memory.keep("synthe", |_| false);
         assert!(!memory.is_blocked("synthe"));
-        assert!(memory.extra_words().is_some_and(|words| words.contains("synthe")));
         let saved = Memory::parse(&memory.to_text(), |_| false);
         assert!(saved.extra_words().is_some_and(|words| words.contains("synthe")));
     }

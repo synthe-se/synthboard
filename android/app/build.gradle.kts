@@ -6,7 +6,7 @@ plugins {
 android {
     namespace = "app.synthboard"
     compileSdk = 37
-    ndkVersion = "28.2.13676358"
+    ndkVersion = "30.0.16248370"
 
     defaultConfig {
         applicationId = "app.synthboard"

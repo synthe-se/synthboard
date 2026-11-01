@@ -92,6 +92,9 @@ class Keyboard {
     fun loadMemory(sealed: ByteArray?, secret: ByteArray): Boolean =
         (send(Call.LoadMemory(sealed, secret)) as Reply.Flag).on
 
+    /** Memory to store, or nothing if a later save got there first. */
+    fun sealMemory(): ByteArray = (send(Call.SealMemory) as Reply.Bytes).bytes
+
     fun openMemory(sealed: ByteArray, secret: ByteArray): ByteArray =
         (send(Call.OpenMemory(sealed, secret)) as Reply.Bytes).bytes
 

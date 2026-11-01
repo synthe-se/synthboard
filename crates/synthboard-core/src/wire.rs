@@ -12,8 +12,12 @@ crate::wire_enum! {
         Select { start: u32, end: u32 },
         /// Deletes the current selection.
         DeleteSelection,
-        /// Performs the field's Enter action.
-        Enter,
+        /// Sends a plain Enter to the field.
+        NewLine,
+        /// Runs the action the field asked for on its Enter key.
+        EditorAction { action: u32 },
+        /// Keeps the keyboard out of screenshots and recordings, or not.
+        ProtectScreen { on: bool },
         /// Opens the system keyboard picker.
         Picker,
         /// Plays a haptic effect.
@@ -42,8 +46,8 @@ crate::wire_enum! {
         Announce { text: String, icon: Icon },
         /// Appends a sealed record to the trace, as hex.
         Trace { record: String },
-        /// Stores what the keyboard learned, for the next start.
-        SaveMemory { sealed: Vec<u8> },
+        /// Asks for memory to be sealed and stored, away from the typing thread.
+        SaveMemory,
         /// Stores the recent emoji for the next start.
         SaveRecents { items: Vec<String> },
     }

@@ -24,3 +24,23 @@ The assets in `android/app/src/main/assets` are generated from these sources by 
 |---|---|---|---|
 
 Code from a GPL source is allowed for private use, but it forces the GPL on any later publication.
+
+## Dependencies
+
+Every direct dependency, and why it earns its place. `cargo machete` finds none unused. Everything else in `Cargo.lock` comes through these.
+
+| Crate | Used by | Why |
+|---|---|---|
+| `hpke` | `synthboard-seal` | RFC 9180, so that sealing is not a home-made construction. It brings the RustCrypto and dalek crates |
+| `sha2` | `synthboard-seal` | Key ids. Already present through `hpke` |
+| `zeroize` | `synthboard-core`, `synthboard-seal`, `synthboard-ffi` | Wiping the mirrors and keys in place |
+| `unicode-normalization` | `synthswipe`, `synthboard-core` | Folding accents to their keys |
+| `unicode-segmentation` | `synthboard-core` | One backspace removes one grapheme, emoji included |
+| `chacha20poly1305`, `hkdf`, `x25519-dalek` | `synthboard-seal`, `legacy` feature only | Opening records made before HPKE, on the Mac. Not in the phone's library |
+| `rayon`, `ruzstd`, `serde`, `serde_json` | `synthswipe-bench` | Mac tools only: parallel replay and reading the datasets |
+| `androidx.autofill` | Android app | The style bundle password managers require for inline suggestions |
+| Robolectric, Roborazzi, JUnit, AndroidX Test | Android tests | The shell's tests, never shipped |
+
+`zeroize_derive` and `syn` run at build time only because `hpke` requires them for one derive.
+
+The NDK and the Rust compiler are pinned to their latest stable versions, in `android/app/build.gradle.kts` and `rust-toolchain.toml`.

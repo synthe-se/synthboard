@@ -152,7 +152,7 @@ class SettingsActivity : Activity() {
             startActivityForResult(
                 Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
                     .setType("text/tab-separated-values")
-                    .putExtra(Intent.EXTRA_TITLE, "synthboard-words.tsv"),
+                    .putExtra(Intent.EXTRA_TITLE, getString(R.string.export_file)),
                 EXPORT,
             )
         }
