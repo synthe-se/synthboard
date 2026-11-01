@@ -9,7 +9,7 @@ fuzz_target!(|data: &[u8]| {
     let lines = text.lines().count();
     assert!(parse(&text).len() <= lines);
     for gesture in parse(&text) {
-        assert!(gesture.truth.is_some() || gesture.fate == Fate::Deleted);
+        assert!(gesture.truth.is_some() || matches!(gesture.fate, Fate::Deleted | Fate::Rephrased));
         let _ = layout_of(&gesture.keys);
     }
     let block_lines: usize = blocks(&text).iter().map(Vec::len).sum();

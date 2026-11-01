@@ -60,8 +60,16 @@ fn day_of(gesture: &Traced) -> String {
     gesture.session.map_or_else(|| UNKNOWN_DAY.to_owned(), |unix| date_of(unix / SECONDS_PER_DAY))
 }
 
+/// The share of a day's gestures kept as written, in percent. A change of mind says
+/// nothing of the reading, so it counts neither way.
+fn kept_share(fates: &HashMap<Fate, usize>) -> f64 {
+    let count = |fate| fates.get(&fate).copied().unwrap_or(0);
+    let read: usize = fates.values().sum::<usize>() - count(Fate::Rephrased);
+    100.0 * count(Fate::Kept) as f64 / read.max(1) as f64
+}
+
 fn print_days(gestures: &[Traced]) {
-    println!("\n{:<12}{:>9}{:>8}{:>8}{:>9}", "Day", "Gestures", "Kept", "Picked", "Deleted");
+    println!("\n{:<12}{:>9}{:>8}{:>8}{:>9}{:>11}", "Day", "Gestures", "Kept", "Picked", "Deleted", "Rephrased");
     let mut days: BTreeMap<String, HashMap<Fate, usize>> = BTreeMap::new();
     for gesture in gestures {
         *days.entry(day_of(gesture)).or_default().entry(gesture.fate).or_default() += 1;
@@ -69,15 +77,15 @@ fn print_days(gestures: &[Traced]) {
     for (day, fates) in days {
         let count = |fate| fates.get(&fate).copied().unwrap_or(0);
         let total: usize = fates.values().sum();
-        let kept = 100.0 * count(Fate::Kept) as f64 / total.max(1) as f64;
-        println!("{day:<12}{total:>9}{kept:>7.0}%{:>8}{:>9}", count(Fate::Picked), count(Fate::Deleted));
+        let kept = kept_share(&fates);
+        println!("{day:<12}{total:>9}{kept:>7.0}%{:>8}{:>9}{:>11}", count(Fate::Picked), count(Fate::Deleted), count(Fate::Rephrased));
     }
 }
 
 /// Lists what the owner meant and what was written: their own words.
 fn print_confusions(gestures: &[Traced]) {
     let mut confusions: HashMap<String, usize> = HashMap::new();
-    for gesture in gestures.iter().filter(|gesture| gesture.fate != Fate::Kept) {
+    for gesture in gestures.iter().filter(|gesture| matches!(gesture.fate, Fate::Picked | Fate::Deleted)) {
         let meant = gesture.truth.as_deref().unwrap_or("?");
         *confusions.entry(format!("{meant} <- {}", gesture.word)).or_default() += 1;
     }
@@ -167,6 +175,17 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_change_of_mind_counts_neither_way() {
+        let fates = HashMap::from([(Fate::Kept, 3), (Fate::Deleted, 1), (Fate::Rephrased, 6)]);
+        assert!((kept_share(&fates) - 75.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_day_of_nothing_but_changes_of_mind_has_no_share() {
+        assert!(kept_share(&HashMap::from([(Fate::Rephrased, 2)])).abs() < f64::EPSILON);
+    }
 
     #[test]
     fn dates_come_out_of_days() {

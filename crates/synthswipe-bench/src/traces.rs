@@ -12,9 +12,12 @@
 //!   decided: `g` the geometry, `n` the network. Early traces stop before `history`,
 //!   `other` or `reader`.
 //! - `C word`: the bar replaced the last gesture's word with this one.
-//! - `D`: backspace reached the last gesture's word.
+//! - `D`: backspace reached the last gesture's word. Nobody knows why yet: the word
+//!   confirmed next tells, with `F` or `M`.
 //! - `F word`: what the gesture deleted last really meant. On a retry this comes
 //!   after the second gesture, `G(A) D G(B) F(B)`, and is about the first.
+//! - `M`: the word confirmed after the gesture deleted last does not fit it. The
+//!   owner changed their mind, so that gesture was neither right nor wrong.
 //!
 //! Anyone with the public key can forge a record, so a line that does not parse
 //! is skipped, and `is_sound` keeps it out of the archive.
@@ -44,6 +47,8 @@ pub enum Fate {
     Kept,
     Picked,
     Deleted,
+    /// Deleted on a change of mind: says nothing of the reading.
+    Rephrased,
 }
 
 /// Who chose the word a gesture wrote.
@@ -166,6 +171,12 @@ pub fn parse(text: &str) -> Vec<Traced> {
                     gesture.truth.get_or_insert_with(|| (*meant).to_owned());
                 }
             }
+            ["M"] => {
+                if let Some(gesture) = found.iter_mut().rev().find(|gesture| gesture.fate == Fate::Deleted) {
+                    gesture.truth = None;
+                    gesture.fate = Fate::Rephrased;
+                }
+            }
             _ => {}
         }
     }
@@ -188,7 +199,7 @@ pub fn is_sound(line: &str) -> bool {
 }
 
 fn is_correction(line: &str) -> bool {
-    line == "D" || line.starts_with("C\t") || line.starts_with("F\t")
+    matches!(line, "D" | "M") || line.starts_with("C\t") || line.starts_with("F\t")
 }
 
 /// Splits a trace into blocks: a gesture line with the corrections after it, or one
@@ -307,6 +318,32 @@ mod tests {
     }
 
     #[test]
+    fn a_change_of_mind_leaves_a_gesture_neither_right_nor_wrong() {
+        let read = parse("G\ta\ta\t1,2,0\nD\nG\tb\tb\t1,2,0\nM\n");
+        assert_eq!((read[0].truth.as_deref(), read[0].fate), (None, Fate::Rephrased));
+        assert_eq!((read[1].truth.as_deref(), read[1].fate), (Some("b"), Fate::Kept));
+    }
+
+    #[test]
+    fn a_change_of_mind_answers_only_the_last_deletion() {
+        let read = parse("G\ta\ta\t1,2,0\nD\nG\tb\tb\t1,2,0\nD\nG\tc\tc\t1,2,0\nM\n");
+        assert_eq!(read[0].fate, Fate::Deleted);
+        assert_eq!(read[1].fate, Fate::Rephrased);
+    }
+
+    #[test]
+    fn a_change_of_mind_without_a_deletion_changes_nothing() {
+        let read = parse("G\ta\ta\t1,2,0\nM\n");
+        assert_eq!((read[0].truth.as_deref(), read[0].fate), (Some("a"), Fate::Kept));
+    }
+
+    #[test]
+    fn a_gesture_after_a_change_of_mind_can_answer_no_older_question() {
+        let read = parse("G\ta\ta\t1,2,0\nD\nM\nG\tb\tb\t1,2,0\nF\tb\n");
+        assert_eq!(read[0].truth, None);
+    }
+
+    #[test]
     fn bad_lines_are_skipped() {
         let read = parse("nonsense\nG\ta\ta\tx,y,z\nS\tnot\nK\tbroken\nG\ta\ta\t1,2,0\nC\n");
         assert_eq!(read.len(), 1);
@@ -347,6 +384,12 @@ mod tests {
         assert_eq!(found.len(), 4);
         assert_eq!(found[1].len(), 3);
         assert_eq!(found[3], ["D"]);
+    }
+
+    #[test]
+    fn a_change_of_mind_stays_with_its_gesture() {
+        let text = format!("{G}\nM\n");
+        assert_eq!(blocks(&text).len(), 1);
     }
 
     #[test]

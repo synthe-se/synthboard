@@ -19,7 +19,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 use synthboard_core::{Decoding, Language};
 use synthswipe::{Affinities, Grammar, Layout, Params, decode_in_context, fits_gesture, fold};
-use synthswipe_bench::traces::{Reader, Traced, TracedKey, layout_of, parse};
+use synthswipe_bench::traces::{Fate, Reader, Traced, TracedKey, layout_of, parse};
 
 use load::{Cell, FutoFilter, Gesture, Lexicons};
 
@@ -262,7 +262,9 @@ fn run_personal(text: &str, params: &Params, neural: Option<Arc<synthswipe::Neur
     let mut replay = Replay::default();
     let mut layout: Option<(Arc<Vec<TracedKey>>, Arc<Layout>)> = None;
     let mut misses: BTreeMap<String, usize> = BTreeMap::new();
-    for gesture in parse(text) {
+    let gestures = parse(text);
+    let rephrased = gestures.iter().filter(|gesture| gesture.fate == Fate::Rephrased).count();
+    for gesture in &gestures {
         let Some(truth) = gesture.truth.as_deref().map(str::to_lowercase) else { continue };
         if !layout.as_ref().is_some_and(|(keys, _)| Arc::ptr_eq(keys, &gesture.keys)) {
             layout = layout_of(&gesture.keys).ok().map(|read| (Arc::clone(&gesture.keys), Arc::new(read)));
@@ -270,9 +272,9 @@ fn run_personal(text: &str, params: &Params, neural: Option<Arc<synthswipe::Neur
         let Some((_, keyboard)) = &layout else { continue };
         replay.total += 1;
         if truth != gesture.word.to_lowercase() {
-            replay.check_correction(&gesture, &truth, keyboard, &rivals, params);
+            replay.check_correction(gesture, &truth, keyboard, &rivals, params);
         }
-        replay.count_other(&gesture, &truth);
+        replay.count_other(gesture, &truth);
         let read = |language: &Language| {
             Decoding::replaying(language, Arc::clone(keyboard), *params, &gesture.history).rank(&gesture.samples).into_iter().next().unwrap_or_default()
         };
@@ -289,6 +291,7 @@ fn run_personal(text: &str, params: &Params, neural: Option<Arc<synthswipe::Neur
     let Replay { total, right, network_right, corrections, corrections_fit, rivals, rivals_fit, recorded, differed, written_right, other_right, by_network, by_geometry } = replay;
     println!("corrections that fit {corrections_fit}/{corrections}; rivals with the same ends that fit {rivals_fit}/{rivals}");
     println!("written by the network {by_network}, by the geometry {by_geometry}; the other reader recorded on {recorded}, and differed on {differed}: the written word was right {written_right}, the other {other_right}");
+    println!("changes of mind, left out of everything here: {rephrased}");
     if show_words {
         let mut worst: Vec<_> = misses.into_iter().collect();
         worst.sort_by_key(|entry| std::cmp::Reverse(entry.1));

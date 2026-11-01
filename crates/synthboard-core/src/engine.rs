@@ -1374,9 +1374,13 @@ impl Engine {
         self.memory_changed = true;
         let mut taught: Vec<Vec<[f32; 2]>> =
             kept.taught.into_iter().filter(|(chosen, _)| *chosen == word).map(|(_, shape)| shape).collect();
-        if let Some(failed) = kept.failed_gesture.filter(|gesture| self.gesture_fits(&kept.written, gesture)) {
-            self.trace(format!("F\t{}", kept.written));
-            taught.extend(self.teach(&kept.written, &failed));
+        if let Some(failed) = kept.failed_gesture {
+            if self.gesture_fits(&kept.written, &failed) {
+                self.trace(format!("F\t{}", kept.written));
+                taught.extend(self.teach(&kept.written, &failed));
+            } else {
+                self.trace("M".to_owned());
+            }
         }
         if self.field.allows_learning() {
             if self.learned.len() >= UNLEARNABLE_WORDS {
@@ -5859,6 +5863,10 @@ mod tests {
         rig.engine.last_word.as_ref().unwrap().gesture.clone()
     }
 
+    fn opened_lines(step: &Step, secret: &[u8; 32]) -> Vec<String> {
+        traces(step).iter().map(|record| opened(secret, record)).collect()
+    }
+
     #[test]
     fn a_second_try_keeps_the_deleted_word_one_tap_away() {
         let mut rig = plain_rig();
@@ -5959,6 +5967,38 @@ mod tests {
         clear_word(&mut rig);
         rig.send(Event::Selection { start: 9, end: 9 });
         assert_eq!(rig.engine.snapshot().unwrap().rank(&gesture), natural);
+    }
+
+    #[test]
+    fn a_word_that_does_not_fit_the_deleted_gesture_says_the_user_changed_their_mind() {
+        let (mut rig, secret) = traced_rig(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
+        rig.swipe("bonjour");
+        clear_word(&mut rig);
+        rig.swipe("été");
+        let lines = opened_lines(&rig.send(Event::Hidden), &secret);
+        assert_eq!(lines, ["M"]);
+    }
+
+    #[test]
+    fn a_word_that_fits_the_deleted_gesture_is_no_change_of_mind() {
+        let (mut rig, secret) = traced_rig(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
+        rig.swipe("bonjour");
+        clear_word(&mut rig);
+        type_word(&mut rig, "bonjour");
+        rig.tap_at(rig.space());
+        let lines = opened_lines(&rig.send(Event::Hidden), &secret);
+        assert_eq!(lines, ["F\tbonjour"]);
+    }
+
+    #[test]
+    fn a_change_of_mind_teaches_nothing() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        clear_word(&mut rig);
+        rig.swipe("été");
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.fresh.len(), 0);
+        assert_eq!(rig.engine.learned.last().unwrap().taught.len(), 0);
     }
 
     #[test]
