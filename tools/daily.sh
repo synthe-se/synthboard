@@ -4,7 +4,7 @@
 #
 # Traces arrive two ways, and the same gesture is only kept once:
 #   - by Taildrop, from the "Send my traces" button in Synthboard's settings;
-#   - by cable, when the phone is plugged in with USB debugging.
+#   - by cable, for debug builds only, since a release cannot be read over USB.
 # They hold typed words in clear, so they stay in the ignored data folder.
 set -eu
 
@@ -29,7 +29,7 @@ if [ -e "$1" ]; then
     python3 -I "$root/tools/ingest-traces.py" "$archive" "$@"
     rm -f "$@"
 else
-    echo "Nothing new. Send your traces from Synthboard's settings, or plug the phone in."
+    echo "Nothing new. Send your traces from Synthboard's settings."
 fi
 
 python3 -I "$root/tools/analyze-traces.py" "$archive"

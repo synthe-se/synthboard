@@ -1,5 +1,6 @@
 package app.synthboard
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.content.res.Configuration
 import android.graphics.Canvas
@@ -18,17 +19,10 @@ import app.synthboard.core.Event
 import app.synthboard.core.Icon
 
 /** Draws what the core describes and reports touches. It decides nothing. */
+@SuppressLint("ViewConstructor")
 class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(context) {
     private val density = resources.displayMetrics.density
-    private val dark = resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK == Configuration.UI_MODE_NIGHT_YES
-    private fun color(night: Int, day: Int) = context.getColor(if (dark) night else day)
-
-    private val backgroundColor = color(android.R.color.system_neutral1_900, android.R.color.system_neutral2_100)
-    private val keyColor = color(android.R.color.system_neutral2_800, android.R.color.system_neutral1_0)
-    private val functionColor = color(android.R.color.system_neutral2_700, android.R.color.system_neutral2_200)
-    private val pressedColor = color(android.R.color.system_accent1_600, android.R.color.system_accent1_200)
-    private val accentColor = color(android.R.color.system_accent1_300, android.R.color.system_accent1_600)
-    private val textColor = color(android.R.color.system_neutral1_50, android.R.color.system_neutral1_900)
+    private var palette = Palette(context)
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply { textAlign = Paint.Align.CENTER }
@@ -36,11 +30,9 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         style = Paint.Style.STROKE
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
-        color = accentColor
         strokeWidth = TRAIL_DP * density
     }
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = textColor
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
         strokeWidth = ICON_STROKE_DP * density
@@ -49,9 +41,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     private val emojiGrid = EmojiGrid(
         context,
         density,
-        textColor,
-        functionColor,
-        pressedColor,
+        { palette },
         context.getString(R.string.recents),
         context.getString(R.string.search),
         ::invalidate,
@@ -151,9 +141,15 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         invalidate()
     }
 
+    /** Keeps Gboard's distance to the screen edge in portrait, where height is plentiful. */
+    private fun minimumBottom(): Int {
+        val portrait = resources.configuration.orientation == Configuration.ORIENTATION_PORTRAIT
+        return if (portrait) (MIN_BOTTOM_DP * density).toInt() else 0
+    }
+
     /** The space kept free for the system's chevron, globe and gesture pill. */
     private fun reservedBottom(insets: WindowInsets): Int = maxOf(
-        (MIN_BOTTOM_DP * density).toInt(),
+        minimumBottom(),
         insets.getInsetsIgnoringVisibility(WindowInsets.Type.navigationBars()).bottom,
         insets.getInsetsIgnoringVisibility(WindowInsets.Type.tappableElement()).bottom,
         insets.getInsets(WindowInsets.Type.mandatorySystemGestures()).bottom,
@@ -172,10 +168,11 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         // The height depends on the width, and a layout request made during
         // layout is ignored, so the keys must be known before measuring ends.
         val measuredWidth = MeasureSpec.getSize(widthSpec)
-        rootWindowInsets?.let { bottomInset = reservedBottom(it) }
+        // The first measure can come before Android has any insets to give.
+        bottomInset = rootWindowInsets?.let(::reservedBottom) ?: minimumBottom()
         if (measuredWidth != knownWidth) {
             knownWidth = measuredWidth
-            send(Event.Resize(measuredWidth.toFloat(), density))
+            send(Event.Resize(measuredWidth.toFloat(), resources.displayMetrics.heightPixels.toFloat(), density))
         }
         setMeasuredDimension(measuredWidth, boardHeight.toInt() + bottomInset + searchRow().toInt())
     }
@@ -190,7 +187,9 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     private fun searchRow() = if (searching) barHeight else 0f
 
     override fun onDraw(canvas: Canvas) {
-        canvas.drawColor(backgroundColor)
+        iconPaint.color = palette.text
+        trailPaint.color = palette.accent
+        canvas.drawColor(palette.background)
         if (panelOpen) {
             emojiGrid.draw(canvas)
             return
@@ -205,7 +204,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
 
     private fun drawSuggestions(canvas: Canvas) {
         text.textSize = SUGGESTION_SP * density
-        text.color = textColor
+        text.color = palette.text
         val baseline = barHeight / 2 - (text.descent() + text.ascent()) / 2
         if (trailActive) {
             // The word forming under the finger takes the bar's centre.
@@ -222,7 +221,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         Icons.drawSearch(canvas, barHeight / 2, center, ICON_DP * density * 0.8f, iconPaint)
         text.textAlign = Paint.Align.LEFT
         text.textSize = SUGGESTION_SP * density
-        text.color = textColor
+        text.color = palette.text
         val shown = searchQuery.ifEmpty { "" }
         canvas.drawText(shown, barHeight, center - (text.descent() + text.ascent()) / 2, text)
         val caret = barHeight + text.measureText(shown) + density
@@ -237,7 +236,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
 
     private fun drawSearch(canvas: Canvas) {
         val cell = width / SEARCH_CELLS.toFloat()
-        text.color = textColor
+        text.color = palette.text
         text.textSize = EMOJI_RESULT_SP * density
         val baseline = barHeight / 2 - (text.descent() + text.ascent()) / 2
         searchResults.take(SEARCH_CELLS).forEachIndexed { index, emoji ->
@@ -250,9 +249,9 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         val gapY = KEY_GAP_Y_DP * density
         rect.set(key.x + gapX, key.y + gapY, key.x + key.width - gapX, key.y + key.height - gapY)
         fill.color = when {
-            index == pressed -> pressedColor
-            key.isFunction -> functionColor
-            else -> keyColor
+            index == pressed -> palette.pressed
+            key.isFunction -> palette.function
+            else -> palette.key
         }
         val radius = if (key.isPill) rect.height() / 2 else KEY_RADIUS_DP * density
         canvas.drawRoundRect(rect, radius, radius, fill)
@@ -267,8 +266,9 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
             }
             return
         }
-        text.textSize = (if (key.isFunction) FUNCTION_SP else KEY_SP) * density
-        text.color = textColor
+        val size = (if (key.isFunction) FUNCTION_SP else KEY_SP) * density
+        text.textSize = minOf(size, rect.height() * MAX_TEXT_SHARE)
+        text.color = palette.text
         val baseline = rect.centerY() - (text.descent() + text.ascent()) / 2
         canvas.drawText(key.label, rect.centerX(), baseline, text)
         if (key.hint.isNotEmpty()) {
@@ -281,15 +281,15 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     private fun drawPopup(canvas: Canvas, shown: Command.Popup) {
         val height = POPUP_HEIGHT_DP * density
         rect.set(shown.x, shown.y, shown.x + shown.itemWidth * shown.items.size, shown.y + height)
-        fill.color = functionColor
+        fill.color = palette.function
         canvas.drawRoundRect(rect, KEY_RADIUS_DP * density, KEY_RADIUS_DP * density, fill)
         text.textSize = KEY_SP * density
-        text.color = textColor
+        text.color = palette.text
         shown.items.forEachIndexed { index, item ->
             val left = shown.x + index * shown.itemWidth
             if (index == shown.selected) {
                 rect.set(left, shown.y, left + shown.itemWidth, shown.y + height)
-                fill.color = pressedColor
+                fill.color = palette.pressed
                 canvas.drawRoundRect(rect, KEY_RADIUS_DP * density, KEY_RADIUS_DP * density, fill)
             }
             val baseline = shown.y + height / 2 - (text.descent() + text.ascent()) / 2
@@ -318,6 +318,33 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     private fun addTrailPoint(x: Float, y: Float) {
         if (trail.isEmpty) trail.moveTo(x, y) else trail.lineTo(x, y)
     }
+
+    /** The system's dark mode or colours can change while the keyboard is loaded. */
+    override fun onConfigurationChanged(configuration: Configuration) {
+        super.onConfigurationChanged(configuration)
+        palette = Palette(context)
+        invalidate()
+    }
+
+    /**
+     * Touch exploration: TalkBack reports hovering, the core names the key under
+     * the finger, and lifting types it.
+     */
+    override fun onHoverEvent(event: MotionEvent): Boolean {
+        if (panelOpen) return false
+        val y = event.y - searchRow()
+        val t = event.eventTime.toULong()
+        when (event.actionMasked) {
+            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> send(Event.Hover(event.x, y))
+            MotionEvent.ACTION_HOVER_EXIT -> {
+                send(Event.Down(0, event.x, y, t))
+                send(Event.Up(0, event.x, y, t))
+            }
+        }
+        return true
+    }
+
+    override fun performClick(): Boolean = super.performClick()
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (panelOpen) return emojiGrid.onTouch(event)
@@ -351,8 +378,10 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
                     invalidate()
                 }
             }
-            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP ->
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
                 send(Event.Up(id, event.getX(index), event.getY(index) - shift, t))
+                if (event.actionMasked == MotionEvent.ACTION_UP) performClick()
+            }
             MotionEvent.ACTION_CANCEL -> send(Event.Cancel)
         }
         return true
@@ -368,6 +397,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         const val KEY_RADIUS_DP = 8f
         const val MIN_BOTTOM_DP = 61f
         const val KEY_SP = 25f
+        const val MAX_TEXT_SHARE = 0.56f
         const val HINT_SP = 11f
         const val HINT_INSET_DP = 6f
         const val FUNCTION_SP = 16f

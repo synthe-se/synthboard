@@ -47,11 +47,12 @@ fn event(chunk: &[u8]) -> Event {
     let t = u64::from(u32::from_le_bytes([chunk[5], chunk[6], chunk[7], chunk[8]]));
     let pointer = i32::from(chunk[9] % 3);
     let number = u32::from(chunk[10]) * 4;
-    match chunk[0] % 19 {
-        0 => Event::Resize { width: x.max(1.0) * 4.0, density: f32::from(chunk[9] % 4 + 1) },
+    match chunk[0] % 20 {
+        0 => Event::Resize { width: x.max(1.0) * 4.0, screen_height: y.max(1.0) * 4.0, density: f32::from(chunk[9] % 4 + 1) },
         1 => Event::Shown {
             field: Field { input_type: u32::from(chunk[9]) | (u32::from(chunk[10]) << 12), ime_options: u32::from(chunk[11]) << 20 },
             before: text(chunk[9]),
+            after: text(chunk[10]),
             cursor: number,
         },
         2 => Event::Hidden,
@@ -61,11 +62,12 @@ fn event(chunk: &[u8]) -> Event {
         10 => Event::Cancel,
         11 => Event::Deadline { t },
         12 => Event::Selection { start: number, end: u32::from(chunk[11]) * 4 },
-        13 => Event::Context { before: text(chunk[9]) },
+        13 => Event::Context { before: text(chunk[9]), after: text(chunk[10]) },
         14 => Event::Text { text: text(chunk[9]) },
         15 => Event::DeleteOne,
         16 => Event::OpenEmojiSearch,
         17 => Event::CloseEmojiPanel,
+        18 => Event::Hover { x, y },
         _ => Event::Memory { text: text(chunk[9]) },
     }
 }
@@ -80,7 +82,7 @@ fuzz_target!(|data: &[u8]| {
         Arc::clone(&data_shared.next_words),
     );
     engine.set_catalog(Arc::clone(&data_shared.catalog));
-    engine.step(Event::Resize { width: 1080.0, density: 2.625 });
+    engine.step(Event::Resize { width: 1080.0, screen_height: 2424.0, density: 2.625 });
     for chunk in data.chunks_exact(EVENT_BYTES) {
         let current = event(chunk);
         if let Some((decoding, path)) = engine.preview_job() {

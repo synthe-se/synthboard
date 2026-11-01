@@ -10,7 +10,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::emoji::Catalog;
 use crate::memory::Memory;
 use crate::predict::NextWords;
-use crate::board::{Action, Alphabet, BAR_DP, Board, Layer, Purpose, popup_of};
+use crate::board::{Action, Alphabet, BAR_DP, Board, Layer, Purpose, Screen, popup_of};
 use crate::wire::{Command, DrawnKey, Haptic, Icon};
 
 /// Android `InputType` and `EditorInfo` constants used for field rules.
@@ -166,13 +166,13 @@ impl Field {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// The keyboard window has a new size.
-    Resize { width: f32, density: f32 },
+    Resize { width: f32, screen_height: f32, density: f32 },
     /// The keyboard height setting changed, 1.0 being the usual height.
     HeightScale { scale: f32 },
     /// Erases everything learned, from the settings screen.
     ForgetAll,
     /// The keyboard opened on a field.
-    Shown { field: Field, before: String, cursor: u32 },
+    Shown { field: Field, before: String, after: String, cursor: u32 },
     /// The keyboard closed.
     Hidden,
     Down { pointer: i32, x: f32, y: f32, t: u64 },
@@ -184,8 +184,10 @@ pub enum Event {
     Deadline { t: u64 },
     /// The field's selection changed.
     Selection { start: u32, end: u32 },
+    /// A screen reader's finger moved over the keyboard.
+    Hover { x: f32, y: f32 },
     /// Answer to `Command::RequestContext`.
-    Context { before: String },
+    Context { before: String, after: String },
     /// Text chosen outside the keys, such as an emoji.
     Text { text: String },
     /// Removes one grapheme, from the emoji panel.
@@ -306,11 +308,15 @@ pub struct Engine {
     height_scale: f32,
     board: Option<Board>,
     width: f32,
+    screen_height: f32,
     density: f32,
     field: Field,
     shift: Shift,
     spacing: Spacing,
     before: String,
+    /// The text after the cursor, to step over it by whole characters.
+    after: String,
+    hovered: Option<usize>,
     cursor: u32,
     expected_selection: Option<u32>,
     selection: (u32, u32),
@@ -513,11 +519,14 @@ impl Engine {
             height_scale: 1.0,
             board: None,
             width: 0.0,
+            screen_height: 0.0,
             density: 1.0,
             field: Field::default(),
             shift: Shift::default(),
             spacing: Spacing::default(),
             before: String::new(),
+            after: String::new(),
+            hovered: None,
             cursor: 0,
             expected_selection: None,
             selection: (0, 0),
@@ -559,11 +568,13 @@ impl Engine {
     /// Handles one event.
     pub fn step(&mut self, event: Event) -> Step {
         match event {
-            Event::Resize { width, density } => {
+            Event::Resize { width, screen_height, density } => {
                 self.width = width;
+                self.screen_height = screen_height;
                 self.density = density;
                 self.rebuild();
             }
+            Event::Hover { x, y } => self.hover(x, y),
             Event::HeightScale { scale } => {
                 if (scale - self.height_scale).abs() > f32::EPSILON {
                     self.height_scale = scale;
@@ -577,7 +588,10 @@ impl Engine {
                 self.protected.clear();
                 self.clear_suggestions();
             }
-            Event::Shown { field, before, cursor } => self.shown(field, before, cursor),
+            Event::Shown { field, before, after, cursor } => {
+                self.after = after;
+                self.shown(field, before, cursor);
+            }
             Event::Hidden => self.hidden(),
             Event::Down { pointer, x, y, t } => self.down(pointer, x, y, t),
             Event::Move { pointer, x, y, t } => {
@@ -593,8 +607,9 @@ impl Engine {
             Event::Cancel => self.cancel(),
             Event::Deadline { t } => self.deadline_passed(t),
             Event::Selection { start, end } => self.selection_changed(start, end),
-            Event::Context { before } => {
+            Event::Context { before, after } => {
                 self.before = before;
+                self.after = after;
                 self.refresh_shift();
             }
             Event::Text { text } => self.pick(&text),
@@ -632,7 +647,8 @@ impl Engine {
         if self.width <= 0.0 {
             return;
         }
-        let board = Board::new(self.alphabet, self.layer, self.field.purpose(), self.width, self.density, self.height_scale);
+        let screen = Screen { width: self.width, height: self.screen_height, density: self.density };
+        let board = Board::new(self.alphabet, self.layer, self.field.purpose(), screen, self.height_scale);
         let shifted = self.shift != Shift::Off;
         let keys = board
             .keys
@@ -1637,27 +1653,32 @@ impl Engine {
         self.out.push(Command::Select { start: base.saturating_sub(units), end: base });
     }
 
+    /// Moves the cursor by whole characters, so an emoji or a combined accent
+    /// is never split. At either end of the text it does nothing.
     fn move_cursor(&mut self, steps: i32) {
-        // Only moves left within the mirror, whose graphemes are known. Moving
-        // right past the mirror needs the text after the cursor (S-1 follow-up).
+        let count = steps.unsigned_abs() as usize;
         let units: u32 = if steps < 0 {
-            self.before
-                .graphemes(true)
-                .rev()
-                .take(steps.unsigned_abs() as usize)
-                .map(utf16_len)
-                .sum()
+            self.before.graphemes(true).rev().take(count).map(utf16_len).sum()
         } else {
-            0
+            self.after.graphemes(true).take(count).map(utf16_len).sum()
         };
-        if steps < 0 && units > 0 {
-            let target = self.cursor.saturating_sub(units);
-            self.out.push(Command::Vibrate { kind: Haptic::Step });
-            self.out.push(Command::Select { start: target, end: target });
-        } else if steps > 0 {
-            let target = self.cursor + steps.unsigned_abs();
-            self.out.push(Command::Vibrate { kind: Haptic::Step });
-            self.out.push(Command::Select { start: target, end: target });
+        if units == 0 {
+            return;
+        }
+        let target = if steps < 0 { self.cursor.saturating_sub(units) } else { self.cursor.saturating_add(units) };
+        self.out.push(Command::Vibrate { kind: Haptic::Step });
+        self.out.push(Command::Select { start: target, end: target });
+    }
+
+    /// Names the key under a screen reader's finger, once per key.
+    fn hover(&mut self, x: f32, y: f32) {
+        let key = self.board.as_ref().and_then(|board| board.key_at(x, y));
+        if key != self.hovered {
+            self.hovered = key;
+            if let Some(found) = key.and_then(|index| self.key(index)) {
+                let command = Command::Announce { text: found.label.clone(), icon: icon_of(&found.action) };
+                self.out.push(command);
+            }
         }
     }
 
@@ -1884,7 +1905,7 @@ mod tests {
     impl Rig {
         fn new(field: Field) -> Self {
             let mut engine = Engine::new();
-            engine.step(Event::Resize { width: 1080.0, density: DENSITY });
+            engine.step(Event::Resize { width: 1080.0, screen_height: 2424.0, density: DENSITY });
             engine.set_lexicon(Arc::new(Lexicon::new([
                 ("bonjour", 150.0),
                 ("bonsoir", 100.0),
@@ -1897,7 +1918,7 @@ mod tests {
                 ("merde", 160.0),
             ])));
             let mut rig = Self { engine, text: String::new(), t: 10_000 };
-            let step = rig.engine.step(Event::Shown { field, before: String::new(), cursor: 0 });
+            let step = rig.engine.step(Event::Shown { field, before: String::new(), after: String::new(), cursor: 0 });
             rig.apply(step);
             rig
         }
@@ -2349,7 +2370,7 @@ mod tests {
         assert_eq!(rig.text, "il");
         rig.send(Event::Hidden);
         rig.text.clear();
-        rig.send(Event::Shown { field: Field { input_type: android::CLASS_TEXT, ime_options: 0 }, before: String::new(), cursor: 0 });
+        rig.send(Event::Shown { field: Field { input_type: android::CLASS_TEXT, ime_options: 0 }, before: String::new(), after: String::new(), cursor: 0 });
         rig.swipe("the");
         rig.swipe("what");
         rig.swipe("il");
@@ -2433,6 +2454,7 @@ mod tests {
         rig.send(Event::Shown {
             field: Field { input_type: android::CLASS_TEXT, ime_options: 0 },
             before: before.to_owned(),
+            after: String::new(),
             cursor,
         });
         rig.text = before.to_owned();
@@ -2529,15 +2551,45 @@ mod tests {
         assert!(far.commands.contains(&Command::Trail { on: true }));
     }
 
-    #[test]
-    fn dragging_space_right_moves_forward() {
-        let mut rig = rig_with_text("abc");
+    fn drag_right(before: &str, after: &str, cursor: u32, distance: f32) -> Step {
+        let mut rig = plain_rig();
+        rig.send(Event::Shown {
+            field: Field { input_type: android::CLASS_TEXT, ime_options: 0 },
+            before: before.to_owned(),
+            after: after.to_owned(),
+            cursor,
+        });
         let (x, y) = rig.space();
         let t = rig.t + 700;
         rig.send(Event::Down { pointer: 0, x, y, t });
         rig.send(Event::Move { pointer: 0, x: x + 30.0, y, t: t + 20 });
-        let step = rig.send(Event::Move { pointer: 0, x: x + 60.0, y, t: t + 30 });
+        rig.send(Event::Move { pointer: 0, x: x + distance, y, t: t + 30 })
+    }
+
+    #[test]
+    fn dragging_space_right_moves_forward_by_whole_characters() {
+        assert!(selects(&drag_right("ab", "cdef", 2, 60.0), 4, 4));
+        let step = drag_right("a", "👍🏽b", 1, 40.0);
         assert!(selects(&step, 5, 5), "{:?}", step.commands);
+    }
+
+    #[test]
+    fn dragging_past_the_end_of_the_text_does_nothing() {
+        let step = drag_right("abc", "", 3, 60.0);
+        assert!(!step.commands.iter().any(|c| matches!(c, Command::Select { .. })));
+    }
+
+    #[test]
+    fn a_screen_reader_hears_each_key_once() {
+        let mut rig = plain_rig();
+        let (x, y) = rig.center("a");
+        let first = rig.send(Event::Hover { x, y });
+        assert!(first.commands.contains(&Command::Announce { text: "a".to_owned(), icon: Icon::None }));
+        let same = rig.send(Event::Hover { x: x + 1.0, y });
+        assert!(!same.commands.iter().any(|c| matches!(c, Command::Announce { .. })));
+        let (dx, dy) = rig.center("⌫");
+        let delete = rig.send(Event::Hover { x: dx, y: dy });
+        assert!(delete.commands.iter().any(|c| matches!(c, Command::Announce { icon: Icon::Delete, .. })));
     }
 
     #[test]
@@ -2819,7 +2871,7 @@ mod tests {
         let step = rig.engine.step(Event::Hidden);
         assert!(!step.commands.iter().any(|c| matches!(c, Command::Keys { .. })));
         rig.tap("⇧");
-        let labels = rig.engine.step(Event::Resize { width: 1080.0, density: DENSITY });
+        let labels = rig.engine.step(Event::Resize { width: 1080.0, screen_height: 2424.0, density: DENSITY });
         let upper = labels.commands.iter().any(|c| matches!(c, Command::Keys { keys, .. } if keys.iter().any(|k| k.label == "A")));
         assert!(upper);
     }

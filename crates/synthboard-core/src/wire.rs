@@ -39,6 +39,8 @@ pub enum Command {
     EmojiPanel { on: bool, recents: Vec<String> },
     /// Shows the emoji search row above the letters, or hides it when `on` is false.
     EmojiSearch { on: bool, query: String, results: Vec<String> },
+    /// Names a key for touch exploration.
+    Announce { text: String, icon: Icon },
     /// Appends a line to the local gesture trace, in debug builds only.
     Trace { line: String },
     /// Stores what the keyboard learned, for the next start.

@@ -156,6 +156,19 @@ pub const ROW_DP: f32 = 62.4;
 /// Height of the suggestion bar (B-1).
 pub const BAR_DP: f32 = 48.0;
 
+/// The most of the screen's height the keyboard may take.
+pub const MAX_HEIGHT_SHARE: f32 = 0.5;
+/// Below this a key cannot be hit, whatever the screen.
+const MIN_ROW_DP: f32 = 32.0;
+
+/// The window a keyboard is laid out for, in pixels.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Screen {
+    pub width: f32,
+    pub height: f32,
+    pub density: f32,
+}
+
 /// One layer of a keyboard laid out for a screen.
 #[derive(Debug, Clone)]
 pub struct Board {
@@ -168,7 +181,8 @@ pub struct Board {
 impl Board {
     /// Lays out a layer for a window `width` pixels wide.
     #[must_use]
-    pub fn new(alphabet: Alphabet, layer: Layer, purpose: Purpose, width: f32, density: f32, height_scale: f32) -> Self {
+    pub fn new(alphabet: Alphabet, layer: Layer, purpose: Purpose, screen: Screen, height_scale: f32) -> Self {
+        let Screen { width, height, density } = screen;
         let bottom = match purpose {
             Purpose::Text => LETTER_BOTTOM,
             Purpose::Password => PASSWORD_BOTTOM,
@@ -184,13 +198,16 @@ impl Board {
             (Layer::Phone, _) => [PHONE, ""],
         };
         let lines: Vec<&str> = rows.iter().flat_map(|text| text.lines()).collect();
-        let row_height = ROW_DP * density * height_scale;
+        let bar = BAR_DP * density;
+        // Landscape has little height, and the text being typed must stay visible.
+        let available = (height * MAX_HEIGHT_SHARE - bar).max(0.0) / lines.len().max(1) as f32;
+        let row_height = (ROW_DP * density * height_scale).min(available.max(MIN_ROW_DP * density));
         let key_width = match layer {
             Layer::Numbers | Layer::Phone => width / 4.0,
             _ => width / 10.0,
         };
         let mut keys = Vec::new();
-        let mut y = BAR_DP * density;
+        let mut y = bar;
         for line in &lines {
             let tokens: Vec<_> = line.split_whitespace().map(parse_token).collect();
             let units: f32 = tokens.iter().map(|token| token.2).sum();
@@ -258,6 +275,8 @@ impl Board {
 mod tests {
     use super::*;
 
+    const PHONE: Screen = Screen { width: 1080.0, height: 2424.0, density: 2.625 };
+
     fn index_of(board: &Board, text: &str) -> Option<usize> {
         board
             .keys
@@ -268,7 +287,7 @@ mod tests {
     #[test]
     fn both_alphabets_have_all_letters_and_a_decoder_layout() {
         for alphabet in [Alphabet::Azerty, Alphabet::Qwerty] {
-            let board = Board::new(alphabet, Layer::Alpha, Purpose::Text, 1080.0, 2.625, 1.0);
+            let board = Board::new(alphabet, Layer::Alpha, Purpose::Text, PHONE, 1.0);
             assert!(board.layout.is_some());
             for letter in 'a'..='z' {
                 assert!(index_of(&board, &letter.to_string()).is_some(), "{letter}");
@@ -280,7 +299,7 @@ mod tests {
     fn rows_fit_the_window() {
         for alphabet in [Alphabet::Azerty, Alphabet::Qwerty] {
             for layer in [Layer::Alpha, Layer::Symbols, Layer::MoreSymbols, Layer::Numbers, Layer::Phone] {
-                let board = Board::new(alphabet, layer, Purpose::Text, 1080.0, 2.625, 1.0);
+                let board = Board::new(alphabet, layer, Purpose::Text, PHONE, 1.0);
                 assert!(board.keys.iter().all(|key| key.x >= 0.0 && key.x + key.width <= 1080.5));
             }
         }
@@ -288,7 +307,7 @@ mod tests {
 
     #[test]
     fn gaps_and_edges_resolve_to_the_nearest_key() {
-        let board = Board::new(Alphabet::Azerty, Layer::Alpha, Purpose::Text, 1080.0, 2.625, 1.0);
+        let board = Board::new(Alphabet::Azerty, Layer::Alpha, Purpose::Text, PHONE, 1.0);
         let a = index_of(&board, "a");
         let (_, row_y) = board.keys.first().map_or((0.0, 0.0), Key::center);
         assert_eq!(board.key_at(0.0, row_y), a);
@@ -298,7 +317,7 @@ mod tests {
 
     #[test]
     fn a_password_board_has_no_emoji_key_and_addresses_get_their_symbol() {
-        let keys = |purpose| Board::new(Alphabet::Azerty, Layer::Alpha, purpose, 1080.0, 2.625, 1.0).keys;
+        let keys = |purpose| Board::new(Alphabet::Azerty, Layer::Alpha, purpose, PHONE, 1.0).keys;
         assert!(!keys(Purpose::Password).iter().any(|key| key.action == Action::Emoji));
         assert!(keys(Purpose::Url).iter().any(|key| key.label == "/"));
         assert!(keys(Purpose::Email).iter().any(|key| key.label == "@"));
@@ -306,7 +325,7 @@ mod tests {
 
     #[test]
     fn the_dial_pad_has_every_digit() {
-        let board = Board::new(Alphabet::Azerty, Layer::Phone, Purpose::Text, 1080.0, 2.625, 1.0);
+        let board = Board::new(Alphabet::Azerty, Layer::Phone, Purpose::Text, PHONE, 1.0);
         for digit in "0123456789#*+".chars() {
             assert!(board.keys.iter().any(|key| key.label == digit.to_string()), "{digit}");
         }
@@ -324,15 +343,31 @@ mod tests {
     }
 
     #[test]
+    fn landscape_leaves_half_the_screen_to_the_text() {
+        let landscape = Screen { width: 2424.0, height: 1080.0, density: 2.625 };
+        let board = Board::new(Alphabet::Azerty, Layer::Alpha, Purpose::Text, landscape, 1.0);
+        assert!(board.height <= 1080.0 * MAX_HEIGHT_SHARE + 0.5, "{}", board.height);
+        let portrait = Board::new(Alphabet::Azerty, Layer::Alpha, Purpose::Text, PHONE, 1.0);
+        assert!((portrait.height - (BAR_DP + ROW_DP * 4.0) * 2.625).abs() < 0.5);
+    }
+
+    #[test]
+    fn keys_stay_hittable_on_a_very_short_window() {
+        let tiny = Screen { width: 2424.0, height: 300.0, density: 2.625 };
+        let board = Board::new(Alphabet::Azerty, Layer::Alpha, Purpose::Text, tiny, 1.0);
+        assert!(board.keys.iter().all(|key| key.height >= MIN_ROW_DP * 2.625 - 0.5));
+    }
+
+    #[test]
     fn the_height_setting_scales_the_rows() {
-        let tall = Board::new(Alphabet::Azerty, Layer::Alpha, Purpose::Text, 1080.0, 2.625, 1.2).height;
-        let usual = Board::new(Alphabet::Azerty, Layer::Alpha, Purpose::Text, 1080.0, 2.625, 1.0).height;
+        let tall = Board::new(Alphabet::Azerty, Layer::Alpha, Purpose::Text, PHONE, 1.2).height;
+        let usual = Board::new(Alphabet::Azerty, Layer::Alpha, Purpose::Text, PHONE, 1.0).height;
         assert!(tall > usual);
     }
 
     #[test]
     fn the_top_letter_row_carries_the_digits() {
-        let board = Board::new(Alphabet::Qwerty, Layer::Alpha, Purpose::Text, 1080.0, 2.625, 1.0);
+        let board = Board::new(Alphabet::Qwerty, Layer::Alpha, Purpose::Text, PHONE, 1.0);
         let hints: String = board.keys.iter().map(|key| key.hint.as_str()).collect();
         assert_eq!(hints, DIGITS);
         assert_eq!(board.keys.first().map(|key| key.label.as_str()), Some("q"));

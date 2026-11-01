@@ -93,7 +93,7 @@ def main():
 
     res = ROOT / "android/app/src/main/res"
     (res / "drawable").mkdir(parents=True, exist_ok=True)
-    (res / "mipmap-anydpi-v26").mkdir(parents=True, exist_ok=True)
+    (res / "mipmap").mkdir(parents=True, exist_ok=True)
     (res / "values").mkdir(parents=True, exist_ok=True)
     head = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
@@ -126,7 +126,7 @@ def main():
         f'<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="ic_launcher_background">{PETROL}</color>\n</resources>\n',
         "utf-8",
     )
-    (res / "mipmap-anydpi-v26/ic_launcher.xml").write_text(
+    (res / "mipmap/ic_launcher.xml").write_text(
         '<?xml version="1.0" encoding="utf-8"?>\n'
         '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n'
         '    <background android:drawable="@color/ic_launcher_background"/>\n'

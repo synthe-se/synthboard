@@ -21,9 +21,7 @@ import app.synthboard.core.Icon
 class EmojiGrid(
     context: Context,
     private val density: Float,
-    private val textColor: Int,
-    private val keyColor: Int,
-    private val pressedColor: Int,
+    private val palette: () -> Palette,
     private val recentsTitle: String,
     private val searchHint: String,
     private val invalidate: () -> Unit,
@@ -48,12 +46,10 @@ class EmojiGrid(
         colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setSaturation(0f) })
     }
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = textColor
         textSize = LABEL_SP * density
     }
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = textColor
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
         strokeWidth = ICON_STROKE_DP * density
@@ -150,8 +146,9 @@ class EmojiGrid(
         invalidate()
     }
 
+    /** The five skin tones come first in an item's variants, then its genders. */
     private fun shown(item: EmojiItem): String =
-        if (tone > 0) item.tones.getOrElse(tone - 1) { item.emoji } else item.emoji
+        if (tone > 0 && item.tones.size >= SKIN_TONES) item.tones[tone - 1] else item.emoji
 
     private fun cellAt(x: Float, y: Float): EmojiItem? {
         if (y < bar || y >= gridBottom()) return null
@@ -207,9 +204,11 @@ class EmojiGrid(
                     invalidate()
                 }
                 MotionEvent.ACTION_UP -> {
-                    tone = toneSelected
                     send(Event.Text(tonePopup[toneSelected]))
-                    onToneChosen(tone)
+                    if (toneSelected <= SKIN_TONES && tonePopup.size > SKIN_TONES) {
+                        tone = toneSelected
+                        onToneChosen(tone)
+                    }
                     tonePopup = emptyList()
                     invalidate()
                 }
@@ -226,6 +225,8 @@ class EmojiGrid(
     var onToneChosen: (Int) -> Unit = {}
 
     fun draw(canvas: Canvas) {
+        labelPaint.color = palette().text
+        iconPaint.color = palette().text
         if (scroller.computeScrollOffset()) {
             scrollY = scroller.currY.toFloat().coerceIn(0f, maxScroll())
             invalidate()
@@ -271,14 +272,14 @@ class EmojiGrid(
     private fun drawTones(canvas: Canvas) {
         if (tonePopup.isEmpty()) return
         rect.set(toneX, toneAnchorY, toneX + cell * tonePopup.size, toneAnchorY + cell)
-        fill.color = keyColor
+        fill.color = palette().key
         canvas.drawRoundRect(rect, 8 * density, 8 * density, fill)
         val baseline = toneAnchorY + cell / 2 - (emojiPaint.descent() + emojiPaint.ascent()) / 2
         tonePopup.forEachIndexed { index, emoji ->
             val left = toneX + cell * index
             if (index == toneSelected) {
                 rect.set(left, toneAnchorY, left + cell, toneAnchorY + cell)
-                fill.color = pressedColor
+                fill.color = palette().pressed
                 canvas.drawRoundRect(rect, 8 * density, 8 * density, fill)
             }
             canvas.drawText(emoji, left + cell / 2, baseline, emojiPaint)
@@ -286,6 +287,7 @@ class EmojiGrid(
     }
 
     private companion object {
+        const val SKIN_TONES = 5
         const val CELL_DP = 48f
         const val HEADER_DP = 28f
         const val STRIP_DP = 44f

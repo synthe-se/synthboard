@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
-import android.content.pm.ApplicationInfo
 import android.net.Uri
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
@@ -25,6 +24,9 @@ object Settings {
     const val TRAIL = "trail"
     const val HEIGHT = "height"
     const val ERASURES = "erasures"
+    const val TRACES = "traces"
+    const val TONE = "tone"
+    const val RECENTS = "recents"
     const val FILE = "emoji"
 }
 
@@ -114,10 +116,9 @@ class SettingsActivity : Activity() {
             )
         }
         action(R.string.erase) { eraseEverything() }
-        if (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0) {
-            heading(R.string.development)
-            action(R.string.send_traces) { sendTraces() }
-        }
+        heading(R.string.development)
+        toggle(R.string.record_traces, Settings.TRACES, resources.getBoolean(R.bool.traces_by_default))
+        action(R.string.send_traces) { sendTraces() }
     }
 
     /**
@@ -140,9 +141,9 @@ class SettingsActivity : Activity() {
 
     private fun eraseEverything() {
         File(filesDir, "memory.tsv").delete()
-        File(filesDir, "traces.tsv").delete()
+        File(filesDir, TraceProvider.FILE).delete()
         store.edit()
-            .remove("recents")
+            .remove(Settings.RECENTS)
             .putInt(Settings.ERASURES, store.getInt(Settings.ERASURES, 0) + 1)
             .apply()
         list.addView(TextView(this).apply { setText(R.string.erased) })
@@ -158,10 +159,10 @@ class SettingsActivity : Activity() {
         }
     }
 
-    private fun toggle(label: Int, key: String) {
+    private fun toggle(label: Int, key: String, default: Boolean = true) {
         list.addView(Switch(this).apply {
             setText(label)
-            isChecked = store.getBoolean(key, true)
+            isChecked = store.getBoolean(key, default)
             setOnCheckedChangeListener { _: View, on: Boolean -> store.edit().putBoolean(key, on).apply() }
         })
     }

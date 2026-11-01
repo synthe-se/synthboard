@@ -1,7 +1,10 @@
 package app.synthboard
 
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
-import android.content.pm.ApplicationInfo
 import android.graphics.Paint
 import android.inputmethodservice.InputMethodService
 import android.os.Handler
@@ -18,19 +21,18 @@ import app.synthboard.core.EmojiItem
 import app.synthboard.core.Event
 import app.synthboard.core.Field
 import app.synthboard.core.Haptic
-import app.synthboard.core.Keyboard
+import app.synthboard.core.Icon
 import java.io.File
-import java.util.concurrent.Executors
 
 /**
  * Forwards Android events to the Rust core and applies its commands. The core
- * makes every decision, including when the single deadline is due.
+ * makes every decision, including when the single deadline is due. Nothing that
+ * fails here may stop typing, so every way in goes through `send` or `Core`.
  */
 class SynthboardService : InputMethodService() {
-    private val keyboard = Keyboard()
+    private val keyboard = Core.keyboard
     private val handler = Handler(Looper.getMainLooper())
     private val deadline = Runnable { send(Event.Deadline(SystemClock.uptimeMillis().toULong())) }
-    private val previewThread = Executors.newSingleThreadExecutor()
     private var previewRunning = false
     private var previewStale = false
     private var view: KeyboardView? = null
@@ -40,20 +42,76 @@ class SynthboardService : InputMethodService() {
     private var haptics = true
     private var seenErasures = 0
 
+    /** Fires once after a reboot, when the user's own files become readable. */
+    private val unlocked = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            guarded {
+                restoreUserData()
+                unregisterUnlockWatch()
+            }
+        }
+    }
+    private var watchingUnlock = false
+
+    private fun isUnlocked(): Boolean = getSystemService(UserManager::class.java).isUserUnlocked
+
+    private fun unregisterUnlockWatch() {
+        if (watchingUnlock) {
+            watchingUnlock = false
+            unregisterReceiver(unlocked)
+        }
+    }
+
+    private fun preferences(): SharedPreferences? =
+        if (isUnlocked()) getSharedPreferences(Settings.FILE, MODE_PRIVATE) else null
+
+    private fun memoryFile(): File? = if (isUnlocked()) File(filesDir, MEMORY_FILE) else null
+
+    /** The local gesture trace, which only exists while recording is on. */
+    private fun traceFile(): File? = preferences()
+        ?.takeIf { it.getBoolean(Settings.TRACES, resources.getBoolean(R.bool.traces_by_default)) }
+        ?.let { File(filesDir, TraceProvider.FILE) }
+
+    private fun readAsset(name: String): ByteArray = assets.open(name).use { it.readBytes() }
+
+    /** Loads what the core needs, once per process, and works before an unlock. */
+    private fun loadLanguageData() {
+        if (Core.loading.getAndSet(true)) return
+        Core.onIo {
+            keyboard.loadLexicon(readAsset("lexicon.csv"))
+            keyboard.loadLanguage(readAsset("affinity.bin"), readAsset("forms.tsv"), readAsset("next.tsv"))
+            handler.post { send(Event.LanguageReady) }
+        }
+    }
+
+    /** Reads the user's memory and settings. After a reboot this waits for the unlock. */
+    private fun restoreUserData() {
+        val saved = preferences() ?: return
+        tone = saved.getInt(Settings.TONE, 0)
+        seenErasures = saved.getInt(Settings.ERASURES, 0)
+        val recents = saved.getString(Settings.RECENTS, "").orEmpty().split(' ').filter(String::isNotEmpty)
+        send(Event.Recents(recents))
+        if (traceFile() != null) send(Event.EnableTraces)
+        Core.onIo {
+            val text = memoryFile()?.takeIf(File::exists)?.readText()
+            handler.post { text?.let { send(Event.Memory(it)) } }
+        }
+    }
+
     /** Loads the emoji the first time the panel opens: most sessions never do. */
     private fun loadEmoji() {
         if (emojiLoading) return
         emojiLoading = true
-        Thread {
+        Core.onIo {
             val paint = Paint()
-            val groups = keyboard.loadEmoji(assets.open("emoji.tsv").use { it.readBytes() }).map { group ->
+            val groups = keyboard.loadEmoji(readAsset("emoji.tsv")).map { group ->
                 group.name to group.items.filter { paint.hasGlyph(it.emoji) }
             }
             handler.post {
                 emoji = groups
-                view?.setEmoji(groups)
+                guarded { view?.setEmoji(groups) }
             }
-        }.start()
+        }
     }
 
     /**
@@ -66,11 +124,11 @@ class SynthboardService : InputMethodService() {
             return
         }
         previewRunning = true
-        previewThread.execute {
+        Core.onPreview {
             val word = keyboard.preview()
             handler.post {
                 previewRunning = false
-                view?.setPreview(word)
+                guarded { view?.setPreview(word) }
                 if (previewStale) {
                     previewStale = false
                     requestPreview()
@@ -92,53 +150,39 @@ class SynthboardService : InputMethodService() {
         }
     }
 
-    /** The local gesture trace, written by debug builds only. */
-    private fun traceFile(): File? =
-        memoryFile()?.takeIf { applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0 }
-            ?.let { File(filesDir, TraceProvider.FILE) }
-
-    /** What was learned. Only reachable once the user has unlocked the phone. */
-    private fun memoryFile(): File? =
-        if (getSystemService(UserManager::class.java).isUserUnlocked) File(filesDir, "memory.tsv") else null
-
     private fun saveMemory(text: String) {
         val target = memoryFile() ?: return
-        val temporary = File(filesDir, "memory.tmp")
-        temporary.writeText(text)
-        temporary.renameTo(target)
+        val temporary = File(filesDir, "$MEMORY_FILE.tmp")
+        Core.onIo {
+            temporary.writeText(text)
+            temporary.renameTo(target)
+        }
     }
 
-    /** Recent emoji and skin tone. Only readable once the user has unlocked. */
-    private fun preferences(): SharedPreferences? =
-        if (getSystemService(UserManager::class.java).isUserUnlocked) getSharedPreferences(Settings.FILE, MODE_PRIVATE) else null
+    private fun appendTrace(line: String) {
+        val target = traceFile() ?: return
+        Core.onIo {
+            if (target.length() < MAX_TRACE_BYTES) target.appendText(line + "\n")
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
-        Thread {
-            keyboard.loadLexicon(assets.open("lexicon.csv").use { it.readBytes() })
-            keyboard.loadLanguage(
-                assets.open("affinity.bin").use { it.readBytes() },
-                assets.open("forms.tsv").use { it.readBytes() },
-                assets.open("next.tsv").use { it.readBytes() },
-            )
-            val saved = memoryFile()?.takeIf { it.exists() }?.readText()
-            handler.post {
-                saved?.let { send(Event.Memory(it)) }
-                send(Event.LanguageReady)
-                if (traceFile() != null) send(Event.EnableTraces)
+        guarded { loadLanguageData() }
+        guarded {
+            if (isUnlocked()) {
+                restoreUserData()
+            } else {
+                watchingUnlock = true
+                registerReceiver(unlocked, IntentFilter(Intent.ACTION_USER_UNLOCKED), RECEIVER_NOT_EXPORTED)
             }
-        }.start()
-        preferences()?.let { saved ->
-            tone = saved.getInt("tone", 0)
-            seenErasures = saved.getInt(Settings.ERASURES, 0)
-            send(Event.Recents(saved.getString("recents", "").orEmpty().split(' ').filter(String::isNotEmpty)))
         }
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        previewThread.shutdownNow()
-        keyboard.close()
+        guarded { unregisterUnlockWatch() }
+        view = null
         super.onDestroy()
     }
 
@@ -148,7 +192,7 @@ class SynthboardService : InputMethodService() {
         it.setEmoji(emoji)
         it.onToneChosen = { chosen ->
             tone = chosen
-            preferences()?.edit()?.putInt("tone", chosen)?.apply()
+            preferences()?.edit()?.putInt(Settings.TONE, chosen)?.apply()
         }
     }
 
@@ -156,10 +200,12 @@ class SynthboardService : InputMethodService() {
 
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
-        applySettings()
-        traceFile()?.appendText("S\t${System.currentTimeMillis() / 1000}\n")
-        val field = Field(info.inputType.toUInt(), info.imeOptions.toUInt())
-        send(Event.Shown(field, textBeforeCursor(), info.initialSelEnd.coerceAtLeast(0).toUInt()))
+        guarded {
+            applySettings()
+            appendTrace("S\t${System.currentTimeMillis() / 1000}")
+            val field = Field(info.inputType.toUInt(), info.imeOptions.toUInt())
+            send(Event.Shown(field, textBeforeCursor(), textAfterCursor(), info.initialSelEnd.coerceAtLeast(0).toUInt()))
+        }
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -175,42 +221,65 @@ class SynthboardService : InputMethodService() {
     private fun textBeforeCursor(): String =
         currentInputConnection?.getTextBeforeCursor(CONTEXT_CHARS, 0)?.toString() ?: ""
 
-    private fun send(event: Event) {
-        val step = keyboard.step(event)
-        handler.removeCallbacks(deadline)
-        step.deadline?.let { handler.postAtTime(deadline, it.toLong()) }
+    private fun textAfterCursor(): String =
+        currentInputConnection?.getTextAfterCursor(CONTEXT_CHARS, 0)?.toString() ?: ""
 
-        val connection = currentInputConnection
-        var wantsContext = false
-        connection?.beginBatchEdit()
-        for (command in step.commands) {
-            when (command) {
-                is Command.Commit -> connection?.commitText(command.text, 1)
-                is Command.DeleteBefore -> connection?.deleteSurroundingText(command.units.toInt(), 0)
-                is Command.Select -> connection?.setSelection(command.start.toInt(), command.end.toInt())
-                is Command.DeleteSelection -> connection?.commitText("", 1)
-                is Command.Enter -> enter()
-                is Command.Picker -> getSystemService(InputMethodManager::class.java).showInputMethodPicker()
-                is Command.Vibrate -> vibrate(command.kind)
-                is Command.Keys -> view?.setKeys(command.height, command.barHeight, command.keys)
-                is Command.Look -> view?.setLook(command.pressed, command.shift.toInt())
-                is Command.Popup -> view?.setPopup(command)
-                is Command.ForgetBubble -> view?.setForgetBubble(command)
-                is Command.Suggestions -> view?.setSuggestions(command)
-                is Command.RequestContext -> wantsContext = true
-                is Command.Trail -> view?.setTrail(command.on)
-                is Command.EmojiPanel -> {
-                    if (command.on) loadEmoji()
-                    view?.setPanel(command.on, command.recents, tone)
+    private fun send(event: Event) {
+        guarded {
+            val step = keyboard.step(event)
+            handler.removeCallbacks(deadline)
+            step.deadline?.let { handler.postAtTime(deadline, it.toLong()) }
+
+            val connection = currentInputConnection
+            var wantsContext = false
+            connection?.beginBatchEdit()
+            for (command in step.commands) {
+                // One failed command must not lose the ones after it.
+                guarded {
+                    if (command is Command.RequestContext) wantsContext = true else apply(command)
                 }
-                is Command.EmojiSearch -> view?.setSearch(command.on, command.query, command.results)
-                is Command.SaveMemory -> saveMemory(command.text)
-                is Command.Trace -> traceFile()?.appendText(command.line + "\n")
-                is Command.SaveRecents -> preferences()?.edit()?.putString("recents", command.items.joinToString(" "))?.apply()
             }
+            connection?.endBatchEdit()
+            if (wantsContext) send(Event.Context(textBeforeCursor(), textAfterCursor()))
         }
-        connection?.endBatchEdit()
-        if (wantsContext) send(Event.Context(textBeforeCursor()))
+    }
+
+    private fun apply(command: Command) {
+        val connection = currentInputConnection
+        when (command) {
+            is Command.Commit -> connection?.commitText(command.text, 1)
+            is Command.DeleteBefore -> connection?.deleteSurroundingText(command.units.toInt(), 0)
+            is Command.Select -> connection?.setSelection(command.start.toInt(), command.end.toInt())
+            is Command.DeleteSelection -> connection?.commitText("", 1)
+            is Command.Enter -> enter()
+            is Command.Picker -> getSystemService(InputMethodManager::class.java).showInputMethodPicker()
+            is Command.Vibrate -> vibrate(command.kind)
+            is Command.Keys -> view?.setKeys(command.height, command.barHeight, command.keys)
+            is Command.Look -> view?.setLook(command.pressed, command.shift.toInt())
+            is Command.Popup -> view?.setPopup(command)
+            is Command.ForgetBubble -> view?.setForgetBubble(command)
+            is Command.Suggestions -> view?.setSuggestions(command)
+            is Command.RequestContext -> Unit
+            is Command.Trail -> view?.setTrail(command.on)
+            is Command.EmojiPanel -> {
+                if (command.on) loadEmoji()
+                view?.setPanel(command.on, command.recents, tone)
+            }
+            is Command.EmojiSearch -> view?.setSearch(command.on, command.query, command.results)
+            is Command.SaveMemory -> saveMemory(command.text)
+            is Command.Trace -> appendTrace(command.line)
+            is Command.SaveRecents ->
+                preferences()?.edit()?.putString(Settings.RECENTS, command.items.joinToString(" "))?.apply()
+            is Command.Announce -> view?.announceForAccessibility(spoken(command))
+        }
+    }
+
+    private fun spoken(command: Command.Announce): String = when (command.icon) {
+        Icon.SHIFT -> getString(R.string.key_shift)
+        Icon.DELETE -> getString(R.string.key_delete)
+        Icon.ENTER -> getString(R.string.key_enter)
+        Icon.EMOJI -> getString(R.string.key_emoji)
+        Icon.NONE -> command.text.ifEmpty { getString(R.string.key_space) }
     }
 
     private fun enter() {
@@ -238,5 +307,7 @@ class SynthboardService : InputMethodService() {
 
     private companion object {
         const val CONTEXT_CHARS = 2000
+        const val MEMORY_FILE = "memory.tsv"
+        const val MAX_TRACE_BYTES = 64L * 1024 * 1024
     }
 }

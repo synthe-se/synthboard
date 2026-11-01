@@ -17,4 +17,10 @@
     <string name="send_traces">Envoyer mes traces</string>
     <string name="no_tailscale">Tailscale n’est pas disponible.</string>
     <string name="forget">Oublier « %1$s »</string>
+    <string name="record_traces">Enregistrer mes gestes sur ce téléphone</string>
+    <string name="key_shift">Majuscule</string>
+    <string name="key_delete">Effacer</string>
+    <string name="key_enter">Entrée</string>
+    <string name="key_emoji">Émojis</string>
+    <string name="key_space">Espace</string>
 </resources>
