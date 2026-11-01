@@ -4,6 +4,7 @@
 use unicode_normalization::UnicodeNormalization;
 use unicode_normalization::char::is_combining_mark;
 
+/// Several rows of the search strip: more than anyone scrolls through.
 const MAX_RESULTS: usize = 32;
 
 crate::wire_struct! {

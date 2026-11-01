@@ -202,11 +202,13 @@ class SynthboardService : InputMethodService() {
 
     override fun onCreateInputView(): View {
         val root = FrameLayout(this)
-        val height = ViewGroup.LayoutParams.WRAP_CONTENT
-        root.addView(keyboardView(), FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height))
-        val inline = InlineStrip(this)
-        root.addView(inline, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height))
-        strip = inline
+        guarded {
+            val height = ViewGroup.LayoutParams.WRAP_CONTENT
+            root.addView(keyboardView(), FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height))
+            val inline = InlineStrip(this)
+            root.addView(inline, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height))
+            strip = inline
+        }
         return root
     }
 
@@ -260,8 +262,8 @@ class SynthboardService : InputMethodService() {
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
-        strip?.clear()
         readable = false
+        guarded { strip?.clear() }
         send(Event.Hidden)
         super.onFinishInputView(finishingInput)
     }

@@ -420,17 +420,25 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     private companion object {
         const val SEARCH_ICON_SHARE = 0.8f
         const val EMOJI_RESULT_SP = 24f
+
+        /** Sizes and gaps measured on a Gboard capture from a Pixel 9a, for thumb memory. */
         const val ICON_DP = 24f
         const val ICON_STROKE_DP = 2.2f
         const val KEY_GAP_X_DP = 2.75f
         const val KEY_GAP_Y_DP = 6.25f
-        const val MIN_BOTTOM_DP = 61f
         const val KEY_SP = 25f
+
+        /** Clears the gesture bar in portrait, before Android reports its insets. */
+        const val MIN_BOTTOM_DP = 61f
+
+        /** Text never taller than this share of a key, on short landscape keys. */
         const val MAX_TEXT_SHARE = 0.56f
         const val HINT_SP = 11f
         const val HINT_INSET_DP = 6f
         const val FUNCTION_SP = 16f
         const val SUGGESTION_SP = 16f
+
+        /** A slot's width, leaving a gap: three slots and a little air. */
         const val SLOT_SHARE = 0.3f
         const val CENTER = 0.5f
 
@@ -442,6 +450,8 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         const val LOCK_BAR_SHARE = 0.33f
         const val LOCK_BAR_DROP = 0.62f
         const val TRAIL_DP = 8f
+
+        /** See-through enough to read the keys under the trail. */
         const val TRAIL_ALPHA = 216
         const val TRAIL_FADE_MS = 300L
     }

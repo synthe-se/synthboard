@@ -163,6 +163,8 @@ fn loops(samples: &[Sample], layout: &Layout, out: &mut Vec<Mark>) {
 /// Where the gesture means something: the finger slowed down or turned. Fast
 /// stretches between these points are transit, however many keys they cross.
 pub(crate) fn intent_points(samples: &[Sample], pitch: f32) -> Vec<Point> {
+    // Set by replaying the owner's gestures: distances in key pitches, the turn
+    // in radians, the speed as a share of the gesture's usual speed.
     const SPAN_KEYS: f32 = 0.7;
     const MIN_TURN: f32 = 0.9;
     const SLOW_RATIO: f32 = 0.45;
@@ -223,6 +225,8 @@ pub(crate) fn unexplained(points: &[Point], keys: &[Point], pitch: f32) -> f32 {
 /// How many sharp turns of a word's path the gesture never made. `porte` goes
 /// back from `r` to `t`, so a straight stroke along the row cannot be `porte`.
 pub(crate) fn missing_turns(keys: &[Point], intent: &[Point], pitch: f32) -> f32 {
+    // Only long legs and near reversals count: small turns are lost in any
+    // real gesture. Distances in key pitches, the turn in radians.
     const MIN_LEG_KEYS: f32 = 0.8;
     const MIN_TURN: f32 = 2.0;
     const MATCH_KEYS: f32 = 1.5;

@@ -161,6 +161,7 @@ fn alignment_cost(gesture: &[Point], keys: &[Point], pitch: f32, row: &mut Vec<f
     last_cost / key_count
 }
 
+/// A cell of the alignment that no path has reached.
 const UNREACHED: u16 = u16::MAX;
 
 /// For each letter and gesture position, the first later position within
@@ -351,6 +352,8 @@ fn steady(path: &[Point], jitter: f32) -> Vec<Point> {
 
 /// The path without a sharp turn in its last stretch, if it has one.
 fn without_end_hook(path: &[Point], pitch: f32) -> Option<Vec<Point>> {
+    // A hook is a sharp turn, in radians, within a key of the end, after a
+    // straight key of approach: anything longer belongs to the word.
     const HOOK_KEYS: f32 = 1.0;
     const APPROACH_KEYS: f32 = 1.0;
     const MIN_TURN: f32 = 0.9;

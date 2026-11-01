@@ -2,6 +2,7 @@
 //! is likely and `sous` is not. This reads the sentence as a sentence, which
 //! word pairs cannot do across `je ne suis` or `je me suis`.
 
+// One bit per person, so that a form can agree with several.
 const FIRST_SINGULAR: u8 = 1;
 const SECOND_SINGULAR: u8 = 2;
 const THIRD_SINGULAR: u8 = 4;

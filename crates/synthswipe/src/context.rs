@@ -31,6 +31,7 @@ pub fn tokens(line: &str) -> Vec<String> {
 /// scale of lexicon weights.
 #[must_use]
 pub fn spoken_weight(count: u32) -> f32 {
+    /// Puts the log of a corpus count on the scale of the word lists.
     const WEIGHT_PER_NAT: f32 = 16.0;
     (1.0 + count as f32).ln() * WEIGHT_PER_NAT
 }
@@ -108,7 +109,9 @@ impl Bigrams {
     }
 }
 
+/// A pair seen in subtitles may not outweigh the gesture, whatever its score.
 const MAX_NATS: f64 = 4.0;
+/// Floors the expected count, so that rare words do not get huge scores.
 const MIN_EXPECTED: f64 = 1.0;
 const STEPS_PER_NAT: f64 = 16.0;
 const ENTRY_BYTES: usize = 5;
