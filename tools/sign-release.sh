@@ -22,9 +22,9 @@ if [ "${1:-}" = new-key ]; then
     "$tools/apksigner" rotate --out "$lineage" \
         --old-signer --ks "$HOME/.android/debug.keystore" --ks-pass pass:android \
         --ks-key-alias androiddebugkey --key-pass pass:android --set-rollback false \
-        --new-signer --ks "$store" --ks-pass "file:$pass" --ks-key-alias synthboard --key-pass "file:$pass"
+        --new-signer --ks "$store" --ks-pass "file:$pass" --ks-key-alias synthboard
 fi
 
-"$tools/apksigner" sign --ks "$store" --ks-pass "file:$pass" --ks-key-alias synthboard --key-pass "file:$pass" \
-    --lineage "$lineage" --out "$outputs/app-release.apk" "$outputs/app-release-unsigned.apk"
+"$tools/apksigner" sign --ks "$store" --ks-pass "file:$pass" --ks-key-alias synthboard \
+    --lineage "$lineage" --v1-signing-enabled false --v2-signing-enabled false --out "$outputs/app-release.apk" "$outputs/app-release-unsigned.apk"
 "$tools/apksigner" verify "$outputs/app-release.apk"

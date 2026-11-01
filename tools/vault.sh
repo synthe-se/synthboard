@@ -2,8 +2,8 @@
 # The encrypted volume holding personal data and the signing key: plain traces,
 # what the keyboard learned, the trace key. A build script runs as the owner in
 # this tree, so these stay locked away except while a tool needs them.
-#   vault.sh create   makes the volume; macOS asks for a new passphrase
-#   vault.sh open     unlocks it; macOS asks for the passphrase
+#   vault.sh create   makes the volume, asking for a new passphrase
+#   vault.sh open     unlocks it, asking for the passphrase
 #   vault.sh close    locks it
 #   vault.sh adopt    moves data/raw/personal onto it, once
 set -eu
@@ -15,16 +15,23 @@ link="$root/data/raw/personal"
 
 is_open() { [ -d "$volume" ]; }
 
+# macOS asks in a masked dialog, and the answer goes straight to hdiutil.
+ask() {
+    osascript -e "text returned of (display dialog \"$1\" default answer \"\" with hidden answer with title \"Synthboard\")"
+}
+
 case "${1:-}" in
 create)
     [ ! -e "$image" ] || { echo "The volume already exists."; exit 1; }
     mkdir -p "$(dirname "$image")"
-    hdiutil create -quiet -agentpass -encryption AES-256 -type SPARSEBUNDLE -fs APFS \
+    first=$(ask "New passphrase for the encrypted volume")
+    [ "$first" = "$(ask "The same passphrase again")" ] || { echo "The two entries differ."; exit 1; }
+    printf %s "$first" | hdiutil create -quiet -stdinpass -encryption AES-256 -type SPARSEBUNDLE -fs APFS \
         -size 2g -volname SynthboardVault "$image"
     tmutil addexclusion "$image"
     ;;
 open)
-    is_open || hdiutil attach -quiet -agentpass -nobrowse "$image"
+    is_open || ask "Passphrase of the encrypted volume" | tr -d '\n' | hdiutil attach -quiet -stdinpass -nobrowse "$image"
     ;;
 close)
     ! is_open || hdiutil detach -quiet "$volume"
