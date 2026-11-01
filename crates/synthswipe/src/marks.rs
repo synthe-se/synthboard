@@ -5,7 +5,7 @@
 
 use std::f32::consts::PI;
 
-use crate::geometry::{Point, Sample, distance};
+use crate::geometry::{Point, Sample, distance, middle, wrapped};
 use crate::layout::Layout;
 use crate::lexicon::raw_keys;
 
@@ -25,6 +25,14 @@ const PAUSE_RADIUS_KEYS: f32 = 0.35;
 const LOOP_RADIUS_KEYS: f32 = 1.0;
 const LOOP_TURN: f32 = 1.6 * PI;
 const MIN_SEGMENT_KEYS: f32 = 0.03;
+/// A shorter stroke crosses too few keys to be unclear about them.
+const MIN_STROKE_KEYS: f32 = 2.0;
+/// What a pause and a loop say for a word that explains them, or against one that
+/// lacks their letter. A loop is the more deliberate of the two. Tuned by hand.
+const PAUSE_REWARD: f32 = 1.0;
+const PAUSE_COST: f32 = -1.0;
+const LOOP_REWARD: f32 = 2.0;
+const LOOP_COST: f32 = -1.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Mark {
@@ -73,7 +81,7 @@ fn is_straight(samples: &[Sample], pitch: f32) -> bool {
     };
     let (a, b) = (point(first), point(last));
     let length = distance(a, b);
-    if length < 2.0 * pitch {
+    if length < MIN_STROKE_KEYS * pitch {
         return false;
     }
     samples.iter().all(|sample| {
@@ -104,7 +112,7 @@ fn stops(samples: &[Sample], layout: &Layout, out: &mut Vec<Mark>) {
     let inner = visits.get(1..visits.len().saturating_sub(1)).unwrap_or_default();
     let mut times: Vec<u32> = inner.iter().map(|visit| visit.1).collect();
     times.sort_unstable();
-    let usual = times.get(times.len() / 2).copied().unwrap_or(0);
+    let usual = middle(&times).unwrap_or(0);
     for &(letter, spent) in inner {
         if spent >= STOP_MS && spent >= usual.saturating_mul(STOP_RATIO) {
             out.push(Mark::Stop(letter));
@@ -115,8 +123,7 @@ fn stops(samples: &[Sample], layout: &Layout, out: &mut Vec<Mark>) {
 fn turning(a: Point, b: Point, c: Point) -> f32 {
     let first = (b[1] - a[1]).atan2(b[0] - a[0]);
     let second = (c[1] - b[1]).atan2(c[0] - b[0]);
-    let turn = second - first;
-    (turn + PI).rem_euclid(2.0 * PI) - PI
+    wrapped(second - first)
 }
 
 fn loops(samples: &[Sample], layout: &Layout, out: &mut Vec<Mark>) {
@@ -183,7 +190,7 @@ pub(crate) fn intent_points(samples: &[Sample], pitch: f32) -> Vec<Point> {
         .collect();
     let mut sorted = speeds.clone();
     sorted.sort_by(f32::total_cmp);
-    let usual = sorted.get(sorted.len() / 2).copied().unwrap_or(0.0);
+    let usual = middle(&sorted).unwrap_or(0.0);
 
     let mut found: Vec<Point> = Vec::new();
     for (index, sample) in samples.iter().enumerate().skip(1) {
@@ -287,20 +294,20 @@ pub(crate) fn agreement(word: &str, marks: &[Mark]) -> f32 {
             }
             Mark::Pause(letter) => {
                 if inner.contains(&letter) {
-                    1.0
+                    PAUSE_REWARD
                 } else if keys.contains(&letter) {
                     0.0
                 } else {
-                    -1.0
+                    PAUSE_COST
                 }
             }
             Mark::Loop(letter) => {
                 if keys.windows(2).any(|pair| pair == [letter, letter]) {
-                    2.0
+                    LOOP_REWARD
                 } else if keys.contains(&letter) {
                     0.0
                 } else {
-                    -1.0
+                    LOOP_COST
                 }
             }
         })

@@ -101,11 +101,13 @@ pub(crate) fn apostrophe_path(word: &str) -> Option<Vec<char>> {
     keys.contains(&APOSTROPHE).then_some(keys)
 }
 
+/// A text's letters in lowercase, without their accents.
+pub fn plain_letters(text: &str) -> impl Iterator<Item = char> {
+    text.nfd().filter(|&letter| !is_combining_mark(letter)).flat_map(char::to_lowercase)
+}
+
 fn keys_of(word: &str, keep_apostrophe: bool) -> Vec<char> {
-    word
-        .nfd()
-        .filter(|&letter| !is_combining_mark(letter))
-        .flat_map(char::to_lowercase)
+    plain_letters(word)
         .flat_map(|letter| match letter {
             'œ' => ['o', 'e'],
             'æ' => ['a', 'e'],
@@ -124,6 +126,15 @@ pub fn fold(word: &str) -> Vec<char> {
     let mut keys = raw_keys(word);
     keys.dedup();
     keys
+}
+
+/// The range an array of ends gives to one item of a flat array.
+pub(crate) fn span(ends: &[u32], index: usize) -> Option<std::ops::Range<usize>> {
+    let start = match index.checked_sub(1) {
+        Some(previous) => *ends.get(previous)? as usize,
+        None => 0,
+    };
+    Some(start..*ends.get(index)? as usize)
 }
 
 fn shared_prefix(a: &[u16], b: &[u16]) -> usize {
@@ -258,19 +269,10 @@ impl Lexicon {
         node.and_then(|node| self.entries_of(node).find(|entry| entry.surface.to_lowercase() == lower))
     }
 
-    /// The range an array of ends gives to one item.
-    fn span(ends: &[u32], index: usize) -> Option<std::ops::Range<usize>> {
-        let start = match index.checked_sub(1) {
-            Some(previous) => *ends.get(previous)? as usize,
-            None => 0,
-        };
-        Some(start..*ends.get(index)? as usize)
-    }
-
     fn entry(&self, index: usize) -> Option<Entry<'_>> {
         Some(Entry {
-            surface: self.surfaces.get(Self::span(&self.surface_ends, index)?)?,
-            letters: self.letters.get(Self::span(&self.letter_ends, index)?)?,
+            surface: self.surfaces.get(span(&self.surface_ends, index)?)?,
+            letters: self.letters.get(span(&self.letter_ends, index)?)?,
             weight: f32::from(*self.weights.get(index)?),
             languages: *self.languages.get(index)?,
         })
@@ -333,6 +335,8 @@ impl Lexicon {
         budget: usize,
         mut visit: impl FnMut(Entry<'a>, f32, u8),
     ) {
+        /// Letters a completion may add: longer ones are rarely the word meant,
+        /// and the walk grows fast with them. Tuned by hand.
         const MAX_EXTRA: u8 = 6;
         let Some(root) = self.nodes.first() else {
             return;

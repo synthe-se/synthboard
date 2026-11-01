@@ -4,6 +4,8 @@
 
 //! The word lists and the bits of a mask are data: see `grammar.tsv` in the assets.
 
+use crate::lexicon::span;
+
 /// Marks a rule among the form lines.
 const RULE_MARK: char = '@';
 const SEPARATOR: char = '\t';
@@ -194,9 +196,7 @@ impl Grammar {
     }
 
     fn form(&self, index: usize) -> &str {
-        let start = index.checked_sub(1).and_then(|i| self.ends.get(i)).map_or(0, |&end| end as usize);
-        let end = self.ends.get(index).map_or(start, |&end| end as usize);
-        self.text.get(start..end).unwrap_or("")
+        span(&self.ends, index).and_then(|range| self.text.get(range)).unwrap_or("")
     }
 
     fn mask(&self, form: &str) -> Option<u8> {

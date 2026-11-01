@@ -13,11 +13,9 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
-use synthswipe::fold;
+use synthswipe::{MODEL_KEYS, fold};
 
 use crate::load::Gesture;
-
-const LAYOUT_LABELS: &str = "abcdefghijklmnopqrstuvwxyz'";
 
 /// One output file.
 pub struct Writer {
@@ -35,7 +33,7 @@ impl Writer {
     pub fn write(&mut self, gesture: &Gesture, session: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
         let pitch = gesture.layout.pitch();
         let keys: Vec<u32> = fold(&gesture.word).into_iter().map(u32::from).collect();
-        let centers: Vec<(char, [f32; 2])> = LAYOUT_LABELS
+        let centers: Vec<(char, [f32; 2])> = MODEL_KEYS
             .chars()
             .filter_map(|label| gesture.layout.center(label).map(|center| (label, center)))
             .collect();

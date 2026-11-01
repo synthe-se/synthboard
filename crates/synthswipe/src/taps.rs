@@ -13,7 +13,11 @@ const REACH_KEYS: f32 = 1.6;
 const SIGMA_KEYS: f32 = 0.6;
 /// The total spatial cost beyond which a word is not considered.
 const MAX_COST: f32 = 7.0;
+/// Cost of each letter a word continues past the taps: a word finished by the taps
+/// outranks a longer one of the same cost. Tuned by hand.
 const COMPLETION_PENALTY: f32 = 0.35;
+/// Trie nodes one correction may visit, which bounds a tap's cost on a short
+/// prefix. Tuned by hand: well above what a word of a few letters needs.
 const NODE_BUDGET: usize = 30_000;
 
 /// A word proposed for some taps.

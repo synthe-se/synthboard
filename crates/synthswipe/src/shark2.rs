@@ -8,10 +8,9 @@
 
 use std::cmp::Ordering;
 use std::collections::HashSet;
-use std::f32::consts::PI;
 use std::fmt;
 
-use crate::geometry::{Point, Sample, distance, is_usable, normalize_shape, resample};
+use crate::geometry::{Point, Sample, distance, is_usable, normalize_shape, resample, wrapped};
 use crate::layout::Layout;
 use crate::lexicon::{Entry, Lexicon};
 use crate::marks::{Mark, agreement, detect, intent_points, missing_turns, unexplained};
@@ -55,6 +54,9 @@ pub struct Params {
     pub hook_penalty: f32,
 }
 
+/// Weight of the middle of a gesture in the location channel, whose ends weigh one
+/// more: the finger lands and lifts with care, and hurries between. Tuned by hand.
+const MIN_LOCATION_WEIGHT: f32 = 0.5;
 /// Precision of a location weight, kept in integers so that it needs no cast from a count.
 const RATIO_STEPS: usize = 1000;
 /// A final turn closer to the end than this, in key pitches, is finger noise.
@@ -122,7 +124,7 @@ fn location_weight(index: usize, count: usize) -> f32 {
     let offset = index.abs_diff(center);
     let span = center.max(1);
     let ratio = u16::try_from(offset * RATIO_STEPS / span).map_or(1.0, |value| f32::from(value) / f32::from(RATIO_STEPS as u16));
-    0.5 + ratio
+    MIN_LOCATION_WEIGHT + ratio
 }
 
 /// The mean squared distance, in squared key pitches, between each key and
@@ -396,7 +398,7 @@ fn without_end_hook(path: &[Point], pitch: f32) -> Option<Vec<Point>> {
             .find(|&&point| distance(point, corner) >= APPROACH_KEYS * pitch)?;
         let before = (corner[1] - approach[1]).atan2(corner[0] - approach[0]);
         let after = (end[1] - corner[1]).atan2(end[0] - corner[0]);
-        let turn = ((after - before + PI).rem_euclid(2.0 * PI) - PI).abs();
+        let turn = wrapped(after - before).abs();
         if turn >= MIN_TURN && best.is_none_or(|(_, sharpest)| turn > sharpest) {
             best = Some((index, turn));
         }

@@ -8,7 +8,6 @@ publish.workspace = true
 [dependencies]
 synthswipe = { path = "../synthswipe" }
 synthboard-seal = { path = "../synthboard-seal" }
-unicode-normalization = "0.1.26"
 unicode-segmentation = "1.13.3"
 zeroize = "1.9.1"
 

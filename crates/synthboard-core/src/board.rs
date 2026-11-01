@@ -1,5 +1,7 @@
 //! Keyboards described as data: a new layout is its rows and one name here.
 
+use std::sync::Arc;
+
 use synthswipe::{Key as DecoderKey, Layout, is_key_label};
 
 /// What pressing a key does.
@@ -194,7 +196,7 @@ pub struct Screen {
 pub struct Board {
     pub keys: Vec<Key>,
     pub height: f32,
-    pub layout: Option<Layout>,
+    pub layout: Option<Arc<Layout>>,
     pub key_width: f32,
 }
 
@@ -271,7 +273,8 @@ impl Board {
                 }))
                 .ok()
             })
-            .flatten();
+            .flatten()
+            .map(Arc::new);
         Self {
             keys,
             height: y,

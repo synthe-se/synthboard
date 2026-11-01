@@ -7,5 +7,8 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 model="$root/data/raw/neural-spike/model"
 out="$root/android/app/src/main/assets/neural.bin"
 
-(printf SYNEURO1; cat "$model/head.bin" "$model/encoder.int8.ort") > "$out"
+# The key head has one size, which the Rust loader fixes: a stale file must not pass.
+eval "$("$root/target/release/shared_numbers")"
+[ "$(wc -c < "$model/head.bin" | tr -d ' ')" = "$model_head_bytes" ] || { echo "head.bin is not $model_head_bytes bytes."; exit 1; }
+(printf %s "$model_magic"; cat "$model/head.bin" "$model/encoder.int8.ort") > "$out"
 wc -c "$out"

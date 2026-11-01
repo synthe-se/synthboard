@@ -4,12 +4,15 @@
 use std::sync::Arc;
 
 use synthboard_seal::KEY_BYTES;
-use synthswipe::{Candidate, best_first, fits_gesture, Mix, Neural, POOL, Reading, lean, fold, Affinities, Grammar, Layout, Lexicon, Params, signature, signature_distance, SENTENCE_START, Sample, correct, decode_in_context, tokens};
+use synthswipe::{
+    Affinities, Candidate, Grammar, Layout, Lexicon, Mix, Neural, POOL, Params, Reading, SENTENCE_START, Sample, best_first, correct,
+    decode_in_context, fits_gesture, fold, lean, signature, signature_distance, tokens,
+};
 use unicode_segmentation::UnicodeSegmentation;
 use zeroize::Zeroize;
 
 use crate::emoji::{Catalog, SKIN_TONES};
-use crate::memory::Memory;
+use crate::memory::{Memory, contexts};
 use crate::predict::{NextWords, mail_domains};
 use crate::board::{Action, Alphabet, BAR_DP, Board, Layer, POPUP_HEIGHT_DP, Purpose, Screen, popup_of};
 use crate::wire::{Command, DrawnKey, Haptic, Icon, ShiftLook};
@@ -74,7 +77,7 @@ const POPUP_LIFT_DP: f32 = 58.0;
 /// How far around the popup a finger still counts as being in it.
 const POPUP_BAND_DP: f32 = POPUP_HEIGHT_DP * 1.2;
 /// Candidates kept from a decode: one more than the bar, for the word that gets filtered.
-const SUGGESTIONS: usize = 4;
+const SUGGESTIONS: usize = BAR_SLOTS + 1;
 /// Recent emoji kept for the panel.
 const MAX_RECENTS: usize = 32;
 /// Emoji results in the search row. The shell draws from this same number.
@@ -100,6 +103,12 @@ pub const SLOT_CENTERS: [f32; BAR_SLOTS] = [0.16, 0.5, 0.84];
 pub const BAR_SLOTS: usize = 3;
 /// What a screen reader says for a key of a field that must stay secret.
 const SECRET_KEY: &str = "•";
+/// Stands for text that takes a space before it, whatever it really starts with.
+const WORD_LIKE: &str = "a";
+/// The slots of the bar in the order `Command::Suggestions` and `offered` list them.
+const CENTER_SLOT: usize = 0;
+const LEFT_SLOT: usize = 1;
+const RIGHT_SLOT: usize = 2;
 /// What ends a sentence.
 const SENTENCE_ENDERS: [char; 4] = ['.', '!', '?', '…'];
 /// What a wiped gesture holds.
@@ -117,8 +126,8 @@ const FRESH_CHOICES: usize = 8;
 const UNLEARNABLE_WORDS: usize = 6;
 /// The two languages of the lexicon's third column, as bits. Which languages
 /// they are is the data's business: `tools/pack-lexicon.sh` decides.
-const FIRST_LANGUAGE: u8 = 1;
-const SECOND_LANGUAGE: u8 = 2;
+pub const FIRST_LANGUAGE: u8 = 1;
+pub const SECOND_LANGUAGE: u8 = 2;
 /// Evidence kept from one word to the next.
 const LANGUAGE_MEMORY: f32 = 0.8;
 const LANGUAGE_LIMIT: f32 = 3.0;
@@ -131,7 +140,7 @@ const LANGUAGE_TILT: f32 = 1.55;
 /// Weight of subject and verb agreement. With `context_weight`, a verb that
 /// agrees gains 1.5 nats and a word that cannot follow loses as much, enough to
 /// beat a wrong frequency but not a clearly different gesture.
-const GRAMMAR_WEIGHT: f32 = 10.0;
+pub const GRAMMAR_WEIGHT: f32 = 10.0;
 /// How far below the bar a release still confirms forgetting, in bar heights.
 const FORGET_REACH: f32 = 1.5;
 /// A habit counts this many times more than corpus evidence: it is the user's
@@ -564,6 +573,11 @@ fn opens_sentence(before: &str, owed_space: bool, grammar: Option<&Grammar>) -> 
         && !last_word.chars().rev().nth(1).is_some_and(|c| c.is_ascii_digit())
 }
 
+/// How a word is written here: in the user's form, with these capitals.
+fn written(shift: Shift, memory: &Memory, grammar: Option<&Grammar>, word: &str) -> String {
+    cased(shift, &memory.form(word), grammar)
+}
+
 fn cased(shift: Shift, word: &str, grammar: Option<&Grammar>) -> String {
     if shift == Shift::Off && grammar.is_some_and(|grammar| grammar.keeps_capital(word)) {
         return title_case(word);
@@ -592,22 +606,58 @@ pub struct Decoding {
     grammar: Option<Arc<Grammar>>,
     neural: Option<Arc<Neural>>,
     memory: Arc<Memory>,
-    layout: Layout,
+    layout: Arc<Layout>,
     params: Params,
     previous: String,
     history: Vec<String>,
+    /// `history` as the contexts memory looks up, joined once per decode:
+    /// every finalist of a gesture asks for them.
+    contexts: Vec<String>,
     leaning: f32,
     shift: Shift,
     retry: Option<Retry>,
 }
 
+/// What a decode reads beside the gesture, for a tool that replays traces.
+#[derive(Debug, Clone)]
+pub struct Language {
+    pub lexicon: Arc<Lexicon>,
+    pub affinities: Option<Arc<Affinities>>,
+    pub grammar: Option<Arc<Grammar>>,
+    /// The network, if it decides.
+    pub neural: Option<Arc<Neural>>,
+}
+
 impl Decoding {
+    /// Reads gestures as the keyboard would after this sentence, at the start of
+    /// a session with an empty memory: the owner's learned words stay on the phone.
+    #[must_use]
+    pub fn replaying(language: &Language, layout: Arc<Layout>, params: Params, history: &[String]) -> Self {
+        let leaning = history.iter().fold(LANGUAGE_START, |leaning, word| next_leaning(leaning, language.lexicon.languages(word)));
+        Self {
+            lexicon: Arc::clone(&language.lexicon),
+            fresh: Vec::new(),
+            affinities: language.affinities.clone(),
+            grammar: language.grammar.clone(),
+            neural: language.neural.clone(),
+            memory: Arc::new(Memory::default()),
+            layout,
+            params,
+            previous: history.last().map_or_else(|| SENTENCE_START.to_owned(), String::clone),
+            history: history.to_vec(),
+            contexts: contexts(history),
+            leaning,
+            shift: Shift::Off,
+            retry: None,
+        }
+    }
+
     /// Everything the sentence says about a word: corpus affinity, agreement,
     /// the user's habit and the session's language. Swipes and taps share it.
-    fn score(&self, previous: &str, history: &[String], word: &str) -> f32 {
+    fn score(&self, previous: &str, history: &[String], contexts: &[String], word: &str) -> f32 {
         let table = self.affinities.as_ref().map_or(0.0, |table| table.score(previous, word));
         let languages = self.lexicon.languages(word);
-        let habit = HABIT_WEIGHT * self.memory.habit_after(history, previous, word)
+        let habit = HABIT_WEIGHT * self.memory.habit_after(contexts, previous, word)
             + FAMILIAR_WEIGHT * self.memory.familiarity(word);
         table + self.agreement(history, word, languages) + habit + language_tilt(languages, self.leaning)
     }
@@ -626,7 +676,7 @@ impl Decoding {
     }
 
     fn context(&self, word: &str) -> f32 {
-        self.score(&self.previous, &self.history, word)
+        self.score(&self.previous, &self.history, &self.contexts, word)
     }
 
     /// Takes a word, stored lowercase, out of `words`, and gives back how it is
@@ -666,7 +716,9 @@ impl Decoding {
         blended
     }
 
-    fn rank(&self, path: &[Sample]) -> Vec<String> {
+    /// The words this gesture may mean, best first.
+    #[must_use]
+    pub fn rank(&self, path: &[Sample]) -> Vec<String> {
         let extra = self.memory.extra_words();
         let wanted = SUGGESTIONS + self.retry.as_ref().map_or(0, |retry| retry.words.len());
         let reading = self.neural.as_ref().and_then(|neural| neural.read(&self.layout, path));
@@ -709,7 +761,7 @@ impl Decoding {
     pub fn preview(&self, path: &[Sample]) -> String {
         self.rank(path)
             .first()
-            .map_or_else(String::new, |word| cased(self.shift, &self.memory.form(word), self.grammar.as_deref()))
+            .map_or_else(String::new, |word| written(self.shift, &self.memory, self.grammar.as_deref(), word))
     }
 }
 
@@ -876,7 +928,7 @@ impl Engine {
         self.catalog = Some(catalog);
     }
 
-    /// The lexicon in use.
+    /// The lexicon, once it has loaded.
     #[must_use]
     pub fn lexicon(&self) -> Option<Arc<Lexicon>> {
         self.lexicon.clone()
@@ -1314,7 +1366,7 @@ impl Engine {
     /// Files a gesture as the user's own trace for the word it really meant, and
     /// gives back what was filed, to take it back if the word is erased.
     fn teach(&mut self, word: &str, gesture: &[Sample]) -> Option<Vec<[f32; 2]>> {
-        let pitch = self.board.as_ref().and_then(|b| b.layout.as_ref()).map(Layout::pitch)?;
+        let pitch = self.layout()?.pitch();
         if !self.field.allows_learning() || gesture.len() < 2 {
             return None;
         }
@@ -1352,7 +1404,7 @@ impl Engine {
 
     /// Remembers a deleted word, so the same gesture does not give it again.
     fn note_retry(&mut self, word: &str, gesture: &[Sample]) {
-        let Some(pitch) = self.board.as_ref().and_then(|b| b.layout.as_ref()).map(Layout::pitch) else {
+        let Some(pitch) = self.layout().map(|layout| layout.pitch()) else {
             return;
         };
         if gesture.len() < 2 {
@@ -1394,7 +1446,7 @@ impl Engine {
     /// Otherwise the user changed their mind, and teaching the word would spoil
     /// the gesture.
     fn gesture_fits(&self, word: &str, gesture: &[Sample]) -> bool {
-        let Some(layout) = self.board.as_ref().and_then(|board| board.layout.as_ref()) else {
+        let Some(layout) = self.layout() else {
             return false;
         };
         let keys = fold(word);
@@ -1492,6 +1544,10 @@ impl Engine {
 
     fn key(&self, index: usize) -> Option<&crate::board::Key> {
         self.board.as_ref().and_then(|board| board.keys.get(index))
+    }
+
+    fn layout(&self) -> Option<&Arc<Layout>> {
+        self.board.as_ref()?.layout.as_ref()
     }
 
     fn bar_height(&self) -> f32 {
@@ -2047,17 +2103,15 @@ impl Engine {
 
     /// Ranks what the taps may mean. An ordered list of `(word, cost, complete)`.
     fn corrections(&self, typing: &Typing) -> Vec<(String, f32, bool)> {
-        let (Some(lexicon), Some(layout)) = (
-            self.lexicon.as_ref(),
-            self.board.as_ref().and_then(|board| board.layout.as_ref()),
-        ) else {
+        let (Some(lexicon), Some(layout)) = (self.lexicon.as_ref(), self.layout()) else {
             return Vec::new();
         };
         let previous = self.token_before(&typing.text);
         let history = self.history(&typing.text);
         let context_weight = self.params.context_weight;
         let decoding = self.snapshot();
-        let context = |word: &str| decoding.as_ref().map_or(0.0, |d| context_weight * d.score(&previous, &history, word));
+        let joined = contexts(&history);
+        let context = |word: &str| decoding.as_ref().map_or(0.0, |d| context_weight * d.score(&previous, &history, &joined, word));
         correct(layout, lexicon, &typing.taps, self.params.lambda, SUGGESTIONS, context)
             .into_iter()
             .filter(|found| !self.memory.is_blocked(found.surface))
@@ -2166,7 +2220,7 @@ impl Engine {
     }
 
     fn insert_raw(&mut self, text: &str) {
-        self.settle_phantom("a");
+        self.settle_phantom(WORD_LIKE);
         self.insert_text(text);
         self.spacing = Spacing::None;
         self.last_word = None;
@@ -2269,8 +2323,7 @@ impl Engine {
     /// Where a letter would be tapped, if it has a key: an apostrophe or a hyphen
     /// inside a word has none on most layouts.
     fn key_of(&self, letter: char) -> Option<[f32; 2]> {
-        let layout = self.board.as_ref()?.layout.as_ref()?;
-        layout.center(fold(&letter.to_string()).first().copied()?)
+        self.layout()?.center(fold(&letter.to_string()).first().copied()?)
     }
 
     /// Typing that holds a word already on screen, each letter tapped on its key.
@@ -2470,6 +2523,7 @@ impl Engine {
     fn snapshot(&self) -> Option<Decoding> {
         let settled = self.settled();
         let replaces_remnant = settled.len() != self.before.len() && matches!(self.shift, Shift::Off | Shift::Auto);
+        let history = self.history(self.before.get(settled.len()..).unwrap_or(""));
         Some(Decoding {
             fresh: self.fresh.clone(),
             lexicon: self.lexicon.clone()?,
@@ -2477,10 +2531,11 @@ impl Engine {
             grammar: self.grammar.clone(),
             neural: self.neural.clone().filter(|_| self.neural_decides),
             memory: Arc::clone(&self.memory),
-            layout: self.board.as_ref()?.layout.clone()?,
+            layout: Arc::clone(self.layout()?),
             params: self.params,
             previous: self.last_token(settled),
-            history: self.history(self.before.get(settled.len()..).unwrap_or("")),
+            contexts: contexts(&history),
+            history,
             leaning: self.leaning,
             shift: if replaces_remnant { self.automatic_shift(settled) } else { self.shift },
             retry: self.retry.clone(),
@@ -2562,24 +2617,24 @@ impl Engine {
     }
 
     fn apply_case(&self, word: &str) -> String {
-        cased(self.shift, &self.memory.form(word), self.grammar.as_deref())
+        written(self.shift, &self.memory, self.grammar.as_deref(), word)
     }
 
     fn show_alternatives(&mut self, alternatives: &[String]) {
         let domains = self.offered_domains();
         let shown = if domains.is_empty() { alternatives } else { &domains };
         let slot = |index: usize| shown.get(index).cloned().unwrap_or_default();
-        self.out.push(Command::Suggestions { center: slot(0), left: slot(1), right: slot(2) });
+        self.out.push(Command::Suggestions { center: slot(CENTER_SLOT), left: slot(LEFT_SLOT), right: slot(RIGHT_SLOT) });
     }
 
     fn slot_at(&self, x: f32) -> usize {
         let [left, center, right] = SLOT_CENTERS;
         if x < self.width * (left + center) / 2.0 {
-            1
+            LEFT_SLOT
         } else if x < self.width * (center + right) / 2.0 {
-            0
+            CENTER_SLOT
         } else {
-            2
+            RIGHT_SLOT
         }
     }
 
@@ -3795,6 +3850,49 @@ mod tests {
         }
         rig.swipe("bonjour");
         assert_eq!(rig.text.to_lowercase(), "bonjour");
+    }
+
+    #[test]
+    fn a_replay_reads_as_the_keyboard_does() {
+        let mut rig = Rig::new(TEXT_FIELD);
+        let lexicon = Lexicon::with_languages([
+            ("suis", 124.0, FIRST_LANGUAGE),
+            ("sous", 172.0, FIRST_LANGUAGE),
+            ("je", 200.0, FIRST_LANGUAGE),
+            ("the", 180.0, SECOND_LANGUAGE),
+        ]);
+        let grammar = Arc::new(Grammar::parse(&format!("{RULES}suis\t1\nsous\t0\n")));
+        rig.engine.set_lexicon(Arc::new(lexicon));
+        rig.engine.set_language(Arc::new(Affinities::default()), Arc::clone(&grammar), Arc::new(NextWords::default()));
+        rig.send(Event::Text { text: "je ".to_owned() });
+        rig.engine.leaning = next_leaning(LANGUAGE_START, FIRST_LANGUAGE);
+        let path: Vec<Sample> = synthswipe::fold("sous").iter().zip(0..).map(|(letter, index)| {
+            let (x, y) = rig.center(&letter.to_string());
+            Sample { x, y, t_ms: index * 40 }
+        }).collect();
+        let live = rig.engine.snapshot().unwrap();
+        let language = Language { lexicon: Arc::clone(&live.lexicon), affinities: None, grammar: Some(grammar), neural: None };
+        let replay = Decoding::replaying(&language, Arc::clone(&live.layout), Params::default(), &["je".to_owned()]);
+        assert_eq!(replay.previous, "je");
+        assert!((replay.leaning - live.leaning).abs() < f32::EPSILON);
+        assert_eq!(replay.rank(&path), live.rank(&path));
+    }
+
+    #[test]
+    fn a_replay_with_no_history_starts_a_sentence() {
+        let rig = Rig::new(TEXT_FIELD);
+        let live = rig.engine.snapshot().unwrap();
+        let language = Language { lexicon: Arc::clone(&live.lexicon), affinities: None, grammar: None, neural: None };
+        let replay = Decoding::replaying(&language, Arc::clone(&live.layout), Params::default(), &[]);
+        assert_eq!(replay.previous, SENTENCE_START);
+        assert!((replay.leaning - LANGUAGE_START).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn a_snapshot_shares_the_layout() {
+        let rig = plain_rig();
+        let snapshot = rig.engine.snapshot().unwrap();
+        assert!(Arc::ptr_eq(&snapshot.layout, rig.engine.layout().unwrap()));
     }
 
     #[test]

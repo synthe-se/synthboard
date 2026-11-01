@@ -10,7 +10,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 
-use synthboard_seal::{from_hex, generate_keys, open, to_hex};
+use synthboard_seal::{KEY_BYTES, from_hex, generate_keys, open, to_hex};
 
 const OWNER_ONLY: u32 = 0o600;
 
@@ -26,7 +26,7 @@ fn create(secret_path: &str, public_path: &str) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn read_secret(path: &&str) -> Result<[u8; 32], Box<dyn Error>> {
+fn read_secret(path: &&str) -> Result<[u8; KEY_BYTES], Box<dyn Error>> {
     let hex = fs::read_to_string(path)?;
     Ok(from_hex(hex.trim()).and_then(|bytes| bytes.try_into().ok()).ok_or("invalid secret key")?)
 }

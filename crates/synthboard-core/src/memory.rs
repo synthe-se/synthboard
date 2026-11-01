@@ -35,7 +35,8 @@ const TRACES_PER_WORD: usize = 4;
 const TRACE_REACH: f32 = 0.45;
 
 /// The last one to three words of a sentence, shortest first, as joined context.
-fn contexts(history: &[String]) -> Vec<String> {
+#[must_use]
+pub fn contexts(history: &[String]) -> Vec<String> {
     (1..=MAX_CONTEXT.min(history.len()))
         .filter_map(|length| history.get(history.len() - length..))
         .map(|words| words.join(" "))
@@ -245,10 +246,10 @@ impl Memory {
         self.forms.get(&word.to_lowercase()).cloned().unwrap_or_else(|| word.to_owned())
     }
 
-    /// The strongest habit for `word`, longer contexts counting more.
+    /// The strongest habit for `word` after these [`contexts`], longer ones counting more.
     #[must_use]
-    pub fn habit_after(&self, history: &[String], previous: &str, word: &str) -> f32 {
-        let longest = contexts(history)
+    pub fn habit_after(&self, contexts: &[String], previous: &str, word: &str) -> f32 {
+        let longest = contexts
             .iter()
             .zip(1_u8..)
             .map(|(context, length)| f32::from(length) * self.habit(context, word))
@@ -540,7 +541,7 @@ mod tests {
         write(&mut memory, "je pense de toi");
         let offered = memory.phrases(&words("je pense de"), "de");
         assert!(offered.first().is_some_and(|phrase| phrase.starts_with("toi")), "{offered:?}");
-        assert!(memory.habit_after(&words("je pense de"), "de", "toi") > memory.habit("de", "toi"));
+        assert!(memory.habit_after(&contexts(&words("je pense de")), "de", "toi") > memory.habit("de", "toi"));
     }
 
     #[test]
@@ -610,7 +611,7 @@ mod tests {
         let mut memory = Memory::default();
         write(&mut memory, "je te vois");
         let expected = 2.0 * 2.0_f32.ln();
-        assert!((memory.habit_after(&words("je te"), "te", "vois") - expected).abs() < 1e-5);
+        assert!((memory.habit_after(&contexts(&words("je te")), "te", "vois") - expected).abs() < 1e-5);
     }
 
     #[test]

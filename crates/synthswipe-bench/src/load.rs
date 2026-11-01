@@ -61,7 +61,6 @@ fn zstd_bytes(path: &Path) -> Result<Vec<u8>> {
 /// A listed word never heard in the subtitles keeps part of its list weight.
 const UNSPOKEN_RATIO: f32 = 0.6;
 
-/// Word lists, loaded once each by dictionary hash.
 /// How gestures and keys are prepared before decoding.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Units {
@@ -71,6 +70,7 @@ pub struct Units {
     pub offset: f32,
 }
 
+/// Word lists, loaded once each by dictionary hash.
 pub struct Lexicons {
     directory: PathBuf,
     min_weight: f32,

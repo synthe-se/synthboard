@@ -33,7 +33,7 @@ Every direct dependency, and why it earns its place. `cargo machete` finds none 
 | `hpke` | `synthboard-seal` | RFC 9180, so that sealing is not a home-made construction. It brings the RustCrypto and dalek crates |
 | `sha2` | `synthboard-seal` | Key ids. Already present through `hpke` |
 | `zeroize` | `synthboard-core`, `synthboard-seal`, `synthboard-ffi` | Wiping the mirrors and keys in place |
-| `unicode-normalization` | `synthswipe`, `synthboard-core` | Folding accents to their keys |
+| `unicode-normalization` | `synthswipe` | Folding accents to their keys |
 | `unicode-segmentation` | `synthboard-core` | One backspace removes one grapheme, emoji included |
 | `chacha20poly1305`, `hkdf`, `x25519-dalek` | `synthboard-seal`, `legacy` feature only | Opening records made before HPKE, on the Mac. Not in the phone's library |
 | `ort` | `synthswipe-onnx` | Runs the model, on the static ONNX Runtime 1.31.1 that `tools/build-ort.sh` builds. Chosen for speed on the A520 |

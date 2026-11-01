@@ -1,7 +1,7 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use synthboard_core::Memory;
+use synthboard_core::{Memory, contexts};
 
 // Saved memory is opened from a file, which may be damaged in any way.
 fuzz_target!(|data: &[u8]| {
@@ -14,7 +14,7 @@ fuzz_target!(|data: &[u8]| {
     let history: Vec<String> = text.split_whitespace().take(4).map(str::to_lowercase).collect();
     let previous = history.last().map_or("<s>", String::as_str).to_owned();
     let word = history.first().cloned().unwrap_or_default();
-    assert!(memory.habit_after(&history, &previous, &word).is_finite());
+    assert!(memory.habit_after(&contexts(&history), &previous, &word).is_finite());
     let _ = memory.phrases(&history, &previous);
     let _ = memory.trace_matches(&[[0.0, 0.0], [1.0, 1.0]]);
     memory.learn_after(&history, &previous, &word, known);

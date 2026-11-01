@@ -27,8 +27,8 @@ pub const INPUT_VALUES: usize = FEATURES * FRAMES;
 pub const OUTPUT_VALUES: usize = (KEY_DIMENSION + 1) * FRAMES;
 
 /// The keys the model knows, in the order of its outputs.
-const LABELS: &str = "abcdefghijklmnopqrstuvwxyz'";
-const KEYS: usize = LABELS.len();
+pub const MODEL_KEYS: &str = "abcdefghijklmnopqrstuvwxyz'";
+const KEYS: usize = MODEL_KEYS.len();
 /// Keys and the CTC blank, which comes first.
 const CLASSES: usize = KEYS + 1;
 /// A key absent from the layout gets this logit, which no alignment will pick.
@@ -217,7 +217,7 @@ impl KeyPlaces {
         let mut center = [0.0; 2];
         let mut present = 0.0;
         let mut raw = [None; KEYS];
-        for (slot, label) in raw.iter_mut().zip(LABELS.chars()) {
+        for (slot, label) in raw.iter_mut().zip(MODEL_KEYS.chars()) {
             if let Some([x, y]) = layout.center(label) {
                 let place = [x / pitch, y / pitch];
                 center = [center[0] + place[0], center[1] + place[1]];
@@ -339,7 +339,7 @@ fn log_add(a: f32, b: f32) -> f32 {
 }
 
 fn class_of(key: char) -> Option<usize> {
-    LABELS.find(key).map(|index| index + 1)
+    MODEL_KEYS.find(key).map(|index| index + 1)
 }
 
 /// A hypothesis: a trie node, with the log-probability of reaching it ending on

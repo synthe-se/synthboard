@@ -262,7 +262,7 @@ impl Keyboard {
         let _ = bytes;
     }
 
-    /// Parses `word,weight` lines and gives the lexicon to the engine.
+    /// Parses `word,weight,languages` lines and gives the lexicon to the engine.
     fn load_lexicon(&self, bytes: &[u8]) {
         let (lexicon, panicked) = guarded(|| Some(Arc::new(parse_lexicon(bytes))));
         if let (Some(lexicon), false) = (lexicon, panicked) {

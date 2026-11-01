@@ -1,13 +1,19 @@
 //! The emoji catalogue and its search. French and English keywords are searched
 //! together, without accents, and nothing leaves the device.
 
-use unicode_normalization::UnicodeNormalization;
-use unicode_normalization::char::is_combining_mark;
+use synthswipe::plain_letters;
 
 /// The skin tones of Unicode's emoji modifiers, which come first among an item's variants.
 pub const SKIN_TONES: usize = 5;
 /// Several rows of the search strip: more than anyone scrolls through.
 const MAX_RESULTS: usize = 32;
+/// An emoji's first words are its names, French then English, keywords after.
+const NAMES: usize = 2;
+/// How a match ranks, best first.
+const EXACT_NAME: u8 = 0;
+const NAME_PREFIX: u8 = 1;
+const EXACT_KEYWORD: u8 = 2;
+const KEYWORD_PREFIX: u8 = 3;
 
 crate::wire_struct! {
     /// One emoji with its skin tone variants.
@@ -42,10 +48,7 @@ pub struct Catalog {
 }
 
 fn plain(text: &str) -> String {
-    text.nfd()
-        .filter(|&letter| !is_combining_mark(letter))
-        .flat_map(char::to_lowercase)
-        .collect()
+    plain_letters(text).collect()
 }
 
 impl Catalog {
@@ -99,15 +102,15 @@ impl Catalog {
                 })
             })
             .map(|(position, item)| {
-                let names = item.words.iter().take(2);
+                let names = item.words.iter().take(NAMES);
                 let rank = if names.clone().any(|name| name == first) {
-                    0
+                    EXACT_NAME
                 } else if names.clone().any(|name| name.split_whitespace().any(|word| word.starts_with(first))) {
-                    1
+                    NAME_PREFIX
                 } else if item.words.iter().any(|word| word == first) {
-                    2
+                    EXACT_KEYWORD
                 } else {
-                    3
+                    KEYWORD_PREFIX
                 };
                 (rank, position, item.emoji.as_str())
             })

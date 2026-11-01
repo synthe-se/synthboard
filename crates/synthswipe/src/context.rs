@@ -116,10 +116,14 @@ const MIN_EXPECTED: f64 = 1.0;
 const STEPS_PER_NAT: f64 = 16.0;
 const ENTRY_BYTES: usize = 5;
 
+/// The 32-bit FNV-1a hash, as its specification fixes it.
+const FNV_OFFSET_BASIS: u32 = 0x811c_9dc5;
+const FNV_PRIME: u32 = 0x0100_0193;
+
 fn pair_hash(first: &str, second: &str) -> u32 {
-    let mut hash: u32 = 0x811c_9dc5;
+    let mut hash = FNV_OFFSET_BASIS;
     for byte in first.bytes().chain([0]).chain(second.bytes()) {
-        hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
+        hash = (hash ^ u32::from(byte)).wrapping_mul(FNV_PRIME);
     }
     hash
 }

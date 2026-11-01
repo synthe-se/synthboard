@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fmt;
 
-use crate::geometry::{Point, distance, is_usable};
+use crate::geometry::{Point, distance, is_usable, middle};
 use crate::lexicon::APOSTROPHE;
 
 const MIN_PITCH: f32 = 1e-3;
@@ -82,10 +82,7 @@ impl Layout {
             })
             .collect();
         gaps.sort_by(f32::total_cmp);
-        let pitch = gaps
-            .get(gaps.len() / 2)
-            .copied()
-            .ok_or(LayoutError::TooFewKeys)?;
+        let pitch = middle(&gaps).ok_or(LayoutError::TooFewKeys)?;
         if pitch < MIN_PITCH {
             return Err(LayoutError::KeysTooClose);
         }
@@ -105,18 +102,21 @@ impl Layout {
 
     /// Labels of the keys within `radius` of `point`, or the nearest key if none is.
     pub(crate) fn keys_near(&self, point: Point, radius: f32) -> Vec<char> {
-        let near: Vec<char> = self
+        // A hash map iterates in a different order in each process, and the same
+        // gesture must give the same word: ties go to the first label.
+        let mut near: Vec<char> = self
             .by_label
             .iter()
             .filter(|&(_, &center)| distance(center, point) <= radius)
             .map(|(&label, _)| label)
             .collect();
         if !near.is_empty() {
+            near.sort_unstable();
             return near;
         }
         self.by_label
             .iter()
-            .min_by(|a, b| distance(*a.1, point).total_cmp(&distance(*b.1, point)))
+            .min_by(|a, b| distance(*a.1, point).total_cmp(&distance(*b.1, point)).then_with(|| a.0.cmp(b.0)))
             .map(|(&label, _)| label)
             .into_iter()
             .collect()
@@ -168,6 +168,15 @@ mod tests {
         };
         assert_eq!(layout.keys_near([2.1, 0.0], 0.5), ['b']);
         assert_eq!(layout.keys_near([50.0, 0.0], 0.5), ['c']);
+    }
+
+    #[test]
+    fn ties_between_keys_always_go_the_same_way() {
+        let keys = [Key { label: 'z', x: 0.0, y: 0.0 }, Key { label: 'a', x: 2.0, y: 0.0 }, Key { label: 'm', x: 4.0, y: 0.0 }];
+        for _ in 0..16 {
+            let layout = Layout::new(keys);
+            assert!(layout.is_ok_and(|layout| layout.keys_near([1.0, 0.0], 0.1) == ['a'] && layout.keys_near([2.0, 0.0], 2.0) == ['a', 'm', 'z']));
+        }
     }
 
     #[test]

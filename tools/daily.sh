@@ -34,4 +34,4 @@ fi
 
 echo
 echo "Replay through the current decoder:"
-./target/release/synthswipe-bench data/raw --min-weight 2 --personal 2>/dev/null | tail -1
+./target/release/synthswipe-bench data/raw --personal 2>/dev/null | tail -1

@@ -1,3 +1,5 @@
+use std::f32::consts::PI;
+
 /// One sampled point of a gesture, in the same units as its layout.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sample {
@@ -22,6 +24,16 @@ const MIN_SHAPE_SIDE: f32 = 1e-6;
 /// Whether a coordinate is finite and small enough to compute with safely.
 pub(crate) fn is_usable(value: f32) -> bool {
     value.abs() <= MAX_COORDINATE
+}
+
+/// The middle value of a sorted list.
+pub(crate) fn middle<T: Copy>(sorted: &[T]) -> Option<T> {
+    sorted.get(sorted.len() / 2).copied()
+}
+
+/// An angle in radians, brought into a half turn either way.
+pub(crate) fn wrapped(angle: f32) -> f32 {
+    (angle + PI).rem_euclid(2.0 * PI) - PI
 }
 
 pub(crate) fn distance([ax, ay]: Point, [bx, by]: Point) -> f32 {
@@ -119,6 +131,19 @@ pub fn signature_distance(a: &[[f32; 2]], b: &[[f32; 2]]) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_angle_wraps_to_the_short_way_round() {
+        assert!((wrapped(1.5 * PI) + 0.5 * PI).abs() < 1e-5);
+        assert!((wrapped(-1.5 * PI) - 0.5 * PI).abs() < 1e-5);
+        assert!((wrapped(0.25) - 0.25).abs() < 1e-5);
+    }
+
+    #[test]
+    fn the_middle_of_nothing_is_nothing() {
+        assert_eq!(middle::<u32>(&[]), None);
+        assert_eq!(middle(&[1, 2, 3]), Some(2));
+    }
 
     #[test]
     fn resample_spaces_points_evenly() {
