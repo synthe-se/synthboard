@@ -42,7 +42,7 @@ jobs:
         with:
           persist-credentials: false
       # rustup reads the pinned compiler from rust-toolchain.toml.
-      - run: rustup toolchain install --profile minimal --component clippy
+      - run: rustup toolchain install
       - uses: taiki-e/install-action@1919c4a95903d2c33e4a221102edca87309fc14b # v2.89.0
         with:
           tool: cargo-deny,cargo-vet
