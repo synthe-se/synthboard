@@ -40,7 +40,7 @@ The model is GrapheneOS: private by default and defence in depth.
 ## Repository
 
 - Code, comments, identifiers and commits are in English. User-facing strings live in `values/` and `values-fr/`.
-- `README.md`, `PROVENANCE.md`, `AGENTS.md` and `docs/security.md` are the only tracked Markdown. Research notes, reports and baselines stay ignored and must stay on disk.
+- `README.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `PROVENANCE.md`, `AGENTS.md` and `docs/security.md` are the only tracked Markdown. Research notes, reports and baselines stay ignored and must stay on disk.
 - Comments state why, not what. Doc comments on types that cross a boundary may say what each part is. Keep them short and do not narrate changes.
 - Commit or push only when the owner asks. Never bypass a denied permission.
 

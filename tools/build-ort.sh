@@ -1,4 +1,4 @@
-#!/bin/zsh
+#!/usr/bin/env zsh
 # Builds ONNX Runtime 1.31.1 as one static archive with cmake and ninja, without build.py. Python still
 # runs: CMake's probes, and the helpers of its configure step. Only gen_proto.py is replaced, below.
 # usage: build-ort.sh <android|mac> <Release|MinSizeRel> [jobs]
@@ -12,9 +12,10 @@ root=${0:A:h:h}
 infer=$root/data/raw/ort
 src=$infer/ortsrc
 seed=$infer/ortbuild/min_ext/MinSizeRel     # earlier Android tree: deps and generated sources
-android_setting() { sed -n "s/^synthboard\.$1=//p" $root/android/gradle.properties; }
+. $root/tools/android-env.sh
 min_sdk=$(android_setting minSdk)
-ndk=$HOME/Library/Android/sdk/ndk/$(android_setting ndkVersion)
+ndk=$(android_ndk)
+ar=$(android_ndk_bin)/llvm-ar
 build=$infer/ortbuild/bench_${platform}_$config
 dist=$infer/$platform
 [[ -d $seed/_deps ]] || { echo "No seed tree at $seed: see the header of this script."; exit 1; }
@@ -65,12 +66,10 @@ if [[ $platform == android ]]; then
     -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=false -Donnxruntime_USE_SVE=ON -Donnxruntime_USE_KLEIDIAI=OFF
     "-DCMAKE_CXX_FLAGS=-Wno-error=unused-const-variable $prefix_map"
   )
-  ar=$ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar
 else
   # KleidiAI trips a -Werror on this host. The host build proves loading and bytes, not Android kernels.
   plat=(-DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -Donnxruntime_USE_KLEIDIAI=OFF
     "-DCMAKE_CXX_FLAGS=$prefix_map")
-  ar=$ndk/toolchains/llvm/prebuilt/darwin-x86_64/bin/llvm-ar
 fi
 
 cd $build

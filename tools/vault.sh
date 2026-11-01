@@ -8,6 +8,9 @@
 #   vault.sh adopt    moves data/raw/personal onto it, once
 set -eu
 
+# hdiutil, tmutil, ditto and the passphrase dialog exist on macOS only.
+[ "$(uname -s)" = Darwin ] || { echo "vault.sh only works on macOS: it drives hdiutil and an encrypted sparse bundle."; exit 1; }
+
 root=$(cd "$(dirname "$0")/.." && pwd)
 image="$HOME/Library/Application Support/Synthboard/vault.sparsebundle"
 volume=/Volumes/SynthboardVault

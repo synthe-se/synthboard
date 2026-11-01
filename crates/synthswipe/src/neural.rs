@@ -20,7 +20,7 @@ pub const FRAMES: usize = 64;
 /// Values per frame: position, step, turn and time.
 pub const FEATURES: usize = 7;
 /// Size of a key's description, and of what the network asks of it.
-const KEY_DIMENSION: usize = 64;
+pub const KEY_DIMENSION: usize = 64;
 /// Values the model reads, feature by feature.
 pub const INPUT_VALUES: usize = FEATURES * FRAMES;
 /// Values the model writes: what it asks of a key, then the blank, each over all frames.
@@ -32,13 +32,13 @@ const KEYS: usize = MODEL_KEYS.len();
 /// Keys and the CTC blank, which comes first.
 const CLASSES: usize = KEYS + 1;
 /// A key absent from the layout gets this logit, which no alignment will pick.
-const ABSENT: f32 = -1e4;
+pub const ABSENT: f32 = -1e4;
 
 /// Share of a frame's place along the gesture given by path length. Time gives
 /// the rest, so that a pause on a key keeps some frames. From the training spike.
 const ARC_SHARE: f32 = 0.7;
 /// Maps key pitches to about [-1, 1]: a layout is about ten keys wide.
-const POSITION_SCALE: f32 = 0.2;
+pub const POSITION_SCALE: f32 = 0.2;
 /// Scales of the first and second differences, which make them about unit size.
 const STEP_SCALE: f32 = 4.0;
 const TURN_SCALE: f32 = 8.0;
@@ -236,11 +236,17 @@ impl KeyPlaces {
     }
 }
 
-/// Resamples a gesture to [`FRAMES`] frames and describes each one.
 fn features(samples: &[Sample], pitch: f32, center: [f32; 2]) -> Option<Vec<f32>> {
     let points: Vec<[f32; 3]> =
         samples.iter().map(|s| [s.x / pitch - center[0], s.y / pitch - center[1], s.t_ms as f32]).collect();
-    let [first, .., final_point] = points.as_slice() else {
+    frame_features(&points)
+}
+
+/// Resamples x, y, milliseconds points, in pitches from the layout's centre, to [`FRAMES`] frames
+/// and describes each one. Public so that training reads gestures exactly as the phone does.
+#[must_use]
+pub fn frame_features(points: &[[f32; 3]]) -> Option<Vec<f32>> {
+    let [first, .., final_point] = points else {
         return None;
     };
     let span = points.len() as f32 - 1.0;

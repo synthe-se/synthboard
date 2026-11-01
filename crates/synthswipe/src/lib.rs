@@ -25,5 +25,5 @@ pub use grammar::Grammar;
 pub use layout::{Key, Layout, LayoutError, is_key_label};
 pub use lexicon::{Entry, Lexicon, fold, plain_letters};
 pub use taps::{Correction, correct};
-pub use neural::{Encoder, FEATURES, FRAMES, INPUT_VALUES, FREQUENCY_WEIGHT, KeyHead, MODEL_HEAD_BYTES, MODEL_KEYS, MODEL_MAGIC, Mix, NETWORK_WEIGHT, Neural, OUTPUT_VALUES, POOL, Reading, floor_of, lean, split_model};
+pub use neural::{ABSENT, Encoder, FEATURES, FRAMES, INPUT_VALUES, FREQUENCY_WEIGHT, KEY_DIMENSION, KeyHead, MODEL_HEAD_BYTES, MODEL_KEYS, MODEL_MAGIC, Mix, NETWORK_WEIGHT, Neural, OUTPUT_VALUES, POOL, POSITION_SCALE, Reading, floor_of, frame_features, lean, split_model};
 pub use shark2::{Candidate, DecodeError, Params, best_first, better, decode, decode_in_context, fits_gesture};

@@ -2,6 +2,7 @@ package app.synthboard
 
 import android.content.Context
 import android.content.Intent
+import android.content.res.AssetManager
 import android.net.Uri
 import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
@@ -10,6 +11,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.Button
+import android.widget.TextView
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
@@ -21,6 +23,7 @@ import org.junit.runner.RunWith
 import org.robolectric.Robolectric
 import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
+import org.robolectric.shadows.ShadowAlertDialog
 import java.io.File
 import java.io.FileNotFoundException
 import java.security.GeneralSecurityException
@@ -32,6 +35,19 @@ import javax.crypto.KeyGenerator
 class SettingsTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
     private val uri = Uri.parse("content://${TraceProvider.authority(context)}/${TraceProvider.FILE}")
+
+    /** Sees no asset at all, as a public build sees no trace key, whatever this tree holds. */
+    class PublicBuild : SettingsActivity() {
+        private val empty = AssetManager::class.java.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+
+        override fun getAssets(): AssetManager = empty
+    }
+
+    private fun texts(view: View): List<String> = when (view) {
+        is TextView -> listOf(view.text.toString())
+        is ViewGroup -> (0 until view.childCount).flatMap { texts(view.getChildAt(it)) }
+        else -> emptyList()
+    }
 
     private fun buttons(view: View): List<Button> = when (view) {
         is Button -> listOf(view)
@@ -98,6 +114,27 @@ class SettingsTest {
         val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
         val labels = buttons(activity.window.decorView).map { it.text.toString() }
         assertEquals(Settings.hasTraceKey(context), context.getString(R.string.send_traces) in labels)
+    }
+
+    @Test
+    fun a_public_build_has_no_development_section() {
+        val activity = Robolectric.buildActivity(PublicBuild::class.java).setup().get()
+        assertFalse(Settings.hasTraceKey(activity))
+        val shown = texts(activity.window.decorView)
+        assertTrue(context.getString(R.string.learned) in shown)
+        assertFalse(context.getString(R.string.development) in shown)
+        assertFalse(context.getString(R.string.record_traces) in shown)
+        assertFalse(context.getString(R.string.send_traces) in shown)
+    }
+
+    @Test
+    fun the_licences_can_be_read_in_the_app() {
+        val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
+        press(activity, R.string.third_party)
+        val shown = shadowOf(ShadowAlertDialog.getLatestAlertDialog()).message.toString()
+        assertEquals(context.assets.open("third_party.txt").use { it.readBytes().decodeToString() }, shown)
+        assertTrue("ONNX Runtime" in shown)
+        assertFalse("KleidiAI" in shown)
     }
 
     @Test

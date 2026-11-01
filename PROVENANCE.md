@@ -21,6 +21,7 @@ The assets in `android/app/src/main/assets` are generated from these sources by 
 
 | Source | Licence | Files here | What was taken |
 |---|---|---|---|
+| ONNX, github.com/onnx/onnx | Apache-2.0 | `training/quant/proto/onnx.proto` | The model schema, unchanged, so that the quantiser can rewrite graphs |
 
 Code from a GPL source is allowed for private use, but it forces the GPL on any later publication.
 
@@ -53,7 +54,6 @@ ONNX Runtime 1.31.1, MIT, commit `6af1a932e2286d5c58166085d24c68783033edee`, sou
 | Abseil | 20250814.0 | Apache-2.0 | Compiled |
 | cpuinfo | `66ee79c0` | BSD-2-Clause | Compiled |
 | FlatBuffers | 23.5.26 | Apache-2.0 | Compiled |
-| KleidiAI | 1.30.0 | Apache-2.0 | Compiled |
 | ONNX | 1.22.0 | Apache-2.0 | Compiled |
 | Protocol Buffers, lite runtime | 33.6 | BSD-3-Clause | Compiled |
 | Eigen | `1d8b82b0` | MPL-2.0, some files under others | Headers |
@@ -62,5 +62,20 @@ ONNX Runtime 1.31.1, MIT, commit `6af1a932e2286d5c58166085d24c68783033edee`, sou
 | Boost.Mp11 | 1.82.0 | BSL-1.0 | Headers |
 | nlohmann/json | 3.11.3 | MIT | Headers |
 | SafeInt | 3.0.28 | MIT | Headers |
+
+### Training
+
+`training/` is two Cargo workspaces of their own, outside the root one, so nothing here enters the keyboard's graph, `deny.toml` or `supply-chain`. Neither is shipped. Their inputs are the public datasets above, never personal traces.
+
+| Crate | Used by | Why |
+|---|---|---|
+| `burn`, `burn-store` | `training/train` | Trains the model in Rust, with no Python or PyTorch, on Metal or the CPU, and writes checkpoints as safetensors |
+| `burn-onnx` | `training/train` | Exports the float graph |
+| `rayon` | `training/train` | Builds batches and scores checkpoints in parallel |
+| `ort`, default features | `training/quant` | Calibrates, and writes `.ort`. These features download Microsoft's full prebuilt ONNX Runtime at build time, for this host tool only: the phone's minimal build can neither read `.onnx` nor write `.ort` |
+| `ndarray` | `training/quant` | The tensor type `ort` takes |
+| `prost`, `prost-build`, `protox` | `training/quant` | Read and write ONNX files in Rust, with no `protoc` binary |
+
+`android/app/src/main/assets/third_party.txt` carries these components' licences and copyrights to the app, with the Rust crates, the standard library and the NDK runtime.
 
 The NDK and the Rust compiler are pinned to their latest stable versions, in `android/gradle.properties` and `rust-toolchain.toml`.

@@ -1,0 +1,23 @@
+# Trains the swipe model on public gestures. Never shipped, and outside the root workspace,
+# so that Burn stays out of the keyboard's dependency graph, audits and lints.
+[package]
+name = "neural-train"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[features]
+# Apple's GPU. Without it, training runs on the CPU through Burn's Flex backend.
+metal = ["burn/metal"]
+# `prod` and `hostile`, which need `ORT_LIB_PATH` to name the static ONNX Runtime.
+onnx = ["dep:synthswipe-onnx"]
+
+[dependencies]
+burn = { version = "=0.22.1", features = ["flex", "autodiff", "fusion", "std", "store"] }
+burn-store = { version = "=0.22.1", features = ["safetensors"] }
+burn-onnx = { version = "=0.22.0", default-features = false, features = ["export"] }
+rayon = "1"
+synthswipe = { path = "../../crates/synthswipe" }
+synthswipe-onnx = { path = "../../crates/synthswipe-onnx", optional = true }

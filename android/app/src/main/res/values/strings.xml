@@ -32,5 +32,6 @@
     <string name="traces_deleted">Traces deleted.</string>
     <string name="try_out">Try the keyboard here</string>
     <string name="qwerty">QWERTY layout</string>
+    <string name="third_party">Third-party licences</string>
     <string name="export_file">synthboard-words.tsv</string>
 </resources>
