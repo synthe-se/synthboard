@@ -12,7 +12,9 @@ root=${0:A:h:h}
 infer=$root/data/raw/ort
 src=$infer/ortsrc
 seed=$infer/ortbuild/min_ext/MinSizeRel     # earlier Android tree: deps and generated sources
-ndk=$HOME/Library/Android/sdk/ndk/30.0.16248370
+android_setting() { sed -n "s/^synthboard\.$1=//p" $root/android/gradle.properties; }
+min_sdk=$(android_setting minSdk)
+ndk=$HOME/Library/Android/sdk/ndk/$(android_setting ndkVersion)
 build=$infer/ortbuild/bench_${platform}_$config
 dist=$infer/$platform
 [[ -d $seed/_deps ]] || { echo "No seed tree at $seed: see the header of this script."; exit 1; }
@@ -57,7 +59,7 @@ common=(
 if [[ $platform == android ]]; then
   plat=(
     -DCMAKE_TOOLCHAIN_FILE=$ndk/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a
-    -DANDROID_PLATFORM=android-29 -DANDROID_MIN_SDK=29 -DANDROID_STL=c++_static
+    -DANDROID_PLATFORM=android-$min_sdk -DANDROID_MIN_SDK=$min_sdk -DANDROID_STL=c++_static
     -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=false -Donnxruntime_USE_SVE=ON -Donnxruntime_USE_KLEIDIAI=ON
     "-DCMAKE_CXX_FLAGS=-Wno-error=unused-const-variable $prefix_map"
   )

@@ -12,6 +12,7 @@ import android.os.SystemClock
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowInsets
+import app.synthboard.core.BAR_SLOTS
 import app.synthboard.core.Command
 import app.synthboard.core.DrawnKey
 import app.synthboard.core.EmojiItem
@@ -51,6 +52,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         strokeWidth = ICON_STROKE_DP * density
     }
     private val rect = RectF()
+    private val bubble = Bubble(KEY_RADIUS_DP * density)
     private val emojiGrid = EmojiGrid(
         context,
         density,
@@ -75,7 +77,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     private var pressed = -1
     private var shiftLook = ShiftLook.OFF
     private var popup: Command.Popup? = null
-    private var suggestions = listOf("", "", "")
+    private var suggestions = List(BAR_SLOTS) { "" }
 
     private val trail = Path()
     private var trailActive = false
@@ -227,7 +229,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     private fun drawSuggestions(canvas: Canvas) {
         text.textSize = SUGGESTION_SP * density
         text.color = palette.text
-        val baseline = barHeight / 2 - (text.descent() + text.ascent()) / 2
+        val baseline = text.centeredOn(barHeight / 2)
         if (undoOffered) {
             canvas.drawText(context.getString(R.string.undo), width * CENTER, baseline, text)
             return
@@ -256,7 +258,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         text.textSize = SUGGESTION_SP * density
         text.color = palette.text
         val shown = searchQuery.ifEmpty { "" }
-        canvas.drawText(shown, barHeight, center - (text.descent() + text.ascent()) / 2, text)
+        canvas.drawText(shown, barHeight, text.centeredOn(center), text)
         val caret = barHeight + text.measureText(shown) + density
         iconPaint.style = Paint.Style.STROKE
         canvas.drawLine(caret, center - SUGGESTION_SP * density * CARET_REACH, caret, center + SUGGESTION_SP * density * CARET_REACH, iconPaint)
@@ -271,7 +273,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         val cell = width / SEARCH_CELLS.toFloat()
         text.color = palette.text
         text.textSize = EMOJI_RESULT_SP * density
-        val baseline = barHeight / 2 - (text.descent() + text.ascent()) / 2
+        val baseline = text.centeredOn(barHeight / 2)
         searchResults.take(SEARCH_CELLS).forEachIndexed { index, emoji ->
             canvas.drawText(emoji, cell * index + cell / 2, baseline, text)
         }
@@ -302,32 +304,20 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         val size = (if (key.isFunction) FUNCTION_SP else KEY_SP) * density
         text.textSize = minOf(size, rect.height() * MAX_TEXT_SHARE)
         text.color = palette.text
-        val baseline = rect.centerY() - (text.descent() + text.ascent()) / 2
-        canvas.drawText(key.label, rect.centerX(), baseline, text)
+        canvas.drawText(key.label, rect.centerX(), text.centeredOn(rect.centerY()), text)
         if (key.hint.isNotEmpty()) {
             text.textSize = HINT_SP * density
             val inset = HINT_INSET_DP * density
-            canvas.drawText(key.hint, rect.right - inset, rect.top + inset - text.ascent() * 0.5f, text)
+            canvas.drawText(key.hint, rect.right - inset, rect.top + inset - text.ascent() * HINT_DROP, text)
         }
     }
 
     private fun drawPopup(canvas: Canvas, shown: Command.Popup) {
         val height = POPUP_HEIGHT_DP * density
         rect.set(shown.x, shown.y, shown.x + shown.itemWidth * shown.items.size, shown.y + height)
-        fill.color = palette.function
-        canvas.drawRoundRect(rect, KEY_RADIUS_DP * density, KEY_RADIUS_DP * density, fill)
         text.textSize = KEY_SP * density
         text.color = palette.text
-        shown.items.forEachIndexed { index, item ->
-            val left = shown.x + index * shown.itemWidth
-            if (index == shown.selected) {
-                rect.set(left, shown.y, left + shown.itemWidth, shown.y + height)
-                fill.color = palette.pressed
-                canvas.drawRoundRect(rect, KEY_RADIUS_DP * density, KEY_RADIUS_DP * density, fill)
-            }
-            val baseline = shown.y + height / 2 - (text.descent() + text.ascent()) / 2
-            canvas.drawText(item, left + shown.itemWidth / 2, baseline, text)
-        }
+        bubble.draw(canvas, rect, shown.items, shown.selected, text, palette.function, palette.pressed)
     }
 
     private fun drawTrail(canvas: Canvas) {
@@ -442,6 +432,9 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         const val MAX_TEXT_SHARE = 0.56f
         const val HINT_SP = 11f
         const val HINT_INSET_DP = 6f
+
+        /** How far the hint's top drops below the inset, as a share of its ascent. */
+        const val HINT_DROP = 0.5f
         const val FUNCTION_SP = 16f
         const val SUGGESTION_SP = 16f
 

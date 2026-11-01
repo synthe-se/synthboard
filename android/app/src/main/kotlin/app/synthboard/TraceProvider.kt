@@ -1,7 +1,9 @@
 package app.synthboard
 
+import android.content.ComponentName
 import android.content.ContentProvider
 import android.content.ContentValues
+import android.content.Context
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.net.Uri
@@ -15,7 +17,7 @@ import java.io.FileNotFoundException
  * is not exported, so nothing can read it without a grant made by a user's tap.
  */
 class TraceProvider : ContentProvider() {
-    private fun traces(): File = File(requireNotNull(context).filesDir, FILE)
+    private fun traces(): File = file(requireNotNull(context))
 
     override fun onCreate(): Boolean = true
 
@@ -41,9 +43,16 @@ class TraceProvider : ContentProvider() {
     companion object {
         const val FILE = "traces.sealed"
         const val TYPE = "application/octet-stream"
-        const val AUTHORITY_SUFFIX = ".traces"
 
         /** Recording stops here, and the settings screen says so. */
         const val MAX_BYTES = 64L * 1024 * 1024
+
+        /** The sealed trace. */
+        fun file(context: Context) = File(context.filesDir, FILE)
+
+        /** The manifest names the provider, and this reads it there. The old overload, which Robolectric can run. */
+        @Suppress("DEPRECATION")
+        fun authority(context: Context): String =
+            context.packageManager.getProviderInfo(ComponentName(context, TraceProvider::class.java), 0).authority
     }
 }

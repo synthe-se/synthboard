@@ -183,7 +183,7 @@ class SynthboardService : InputMethodService() {
     }
 
     private fun appendTrace(record: String) {
-        val target = File(filesDir, TraceProvider.FILE)
+        val target = TraceProvider.file(this)
         Core.onIo {
             if (target.length() < TraceProvider.MAX_BYTES) target.appendText(record + "\n")
         }

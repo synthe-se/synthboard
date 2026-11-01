@@ -168,7 +168,7 @@ class SettingsActivity : Activity() {
             toggle(R.string.record_traces, Settings.TRACES)
             toggle(R.string.screenshots, Settings.SCREENSHOTS, false)
             toggle(R.string.neural, Settings.NEURAL, false)
-            val traces = File(filesDir, TraceProvider.FILE)
+            val traces = TraceProvider.file(this)
             if (traces.length() >= TraceProvider.MAX_BYTES) {
                 list.addView(TextView(this).apply { setText(R.string.traces_full) })
             }
@@ -186,7 +186,7 @@ class SettingsActivity : Activity() {
      * owner's secret key can open it.
      */
     internal fun sendTraces() {
-        val authority = packageName + TraceProvider.AUTHORITY_SUFFIX
+        val authority = TraceProvider.authority(this)
         val uri = Uri.Builder().scheme("content").authority(authority).path(TraceProvider.FILE).build()
         val share = Intent(Intent.ACTION_SEND)
             .setPackage(TAILSCALE)

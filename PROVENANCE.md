@@ -63,4 +63,4 @@ ONNX Runtime 1.31.1, MIT, commit `6af1a932e2286d5c58166085d24c68783033edee`, sou
 | nlohmann/json | 3.11.3 | MIT | Headers |
 | SafeInt | 3.0.28 | MIT | Headers |
 
-The NDK and the Rust compiler are pinned to their latest stable versions, in `android/app/build.gradle.kts` and `rust-toolchain.toml`.
+The NDK and the Rust compiler are pinned to their latest stable versions, in `android/gradle.properties` and `rust-toolchain.toml`.

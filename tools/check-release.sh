@@ -11,7 +11,8 @@ unsigned="$outputs/app-release-unsigned.apk"
 hashes="$root/tools/release-hashes.txt"
 sdk="$HOME/Library/Android/sdk"
 tools=$(ls -d "$sdk"/build-tools/* | tail -1)
-readelf=$(ls "$sdk"/ndk/*/toolchains/llvm/prebuilt/*/bin/llvm-readelf | tail -1)
+ndk=$(sed -n 's/^synthboard\.ndkVersion=//p' "$root/android/gradle.properties")
+readelf=$(ls "$sdk/ndk/$ndk"/toolchains/llvm/prebuilt/*/bin/llvm-readelf)
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 fail() { echo "FAIL: $1"; exit 1; }

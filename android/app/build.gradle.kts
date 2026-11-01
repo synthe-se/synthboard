@@ -3,15 +3,18 @@ plugins {
     id("io.github.takahirom.roborazzi")
 }
 
+val minimumSdk = providers.gradleProperty("synthboard.minSdk").get().toInt()
+val targetedSdk = providers.gradleProperty("synthboard.targetSdk").get().toInt()
+
 android {
     namespace = "app.synthboard"
-    compileSdk = 37
-    ndkVersion = "30.0.16248370"
+    compileSdk = targetedSdk
+    ndkVersion = providers.gradleProperty("synthboard.ndkVersion").get()
 
     defaultConfig {
         applicationId = "app.synthboard"
-        minSdk = 34
-        targetSdk = 37
+        minSdk = minimumSdk
+        targetSdk = targetedSdk
         versionCode = 1
         versionName = "0.0.0"
         ndk {
@@ -60,7 +63,7 @@ val nativeLibrary = tasks.register<Exec>("nativeLibrary") {
     workingDir = repository
     val toolchain = androidComponents.sdkComponents.sdkDirectory.get().asFile
         .resolve("ndk/${android.ndkVersion}/toolchains/llvm/prebuilt/darwin-x86_64/bin")
-    environment("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", toolchain.resolve("aarch64-linux-android34-clang").path)
+    environment("CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER", toolchain.resolve("aarch64-linux-android$minimumSdk-clang").path)
     // Page size for current phones, and no path of this machine in the library.
     environment(
         "RUSTFLAGS",

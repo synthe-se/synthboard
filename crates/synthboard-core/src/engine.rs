@@ -140,7 +140,7 @@ const LANGUAGE_TILT: f32 = 1.55;
 /// Weight of subject and verb agreement. With `context_weight`, a verb that
 /// agrees gains 1.5 nats and a word that cannot follow loses as much, enough to
 /// beat a wrong frequency but not a clearly different gesture.
-pub const GRAMMAR_WEIGHT: f32 = 10.0;
+const GRAMMAR_WEIGHT: f32 = 10.0;
 /// How far below the bar a release still confirms forgetting, in bar heights.
 const FORGET_REACH: f32 = 1.5;
 /// A habit counts this many times more than corpus evidence: it is the user's

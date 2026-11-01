@@ -100,7 +100,10 @@ class Keyboard {
         (send(Call.OpenMemory(sealed, secret)) as Reply.Bytes).bytes
 
     private companion object {
-        const val OUTPUT_BYTES = 8 * 1024
+        /** Holds any usual step, keys included: a larger reply goes through `take`. */
+        const val OUTPUT_BYTES = 8192
+
+        /** Far longer than a word, which is all a preview holds. */
         const val PREVIEW_BYTES = 256
     }
 }

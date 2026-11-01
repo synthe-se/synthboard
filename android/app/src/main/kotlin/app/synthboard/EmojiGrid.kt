@@ -50,13 +50,13 @@ class EmojiGrid(
     private val labelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         textSize = LABEL_SP * density
     }
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
         strokeWidth = ICON_STROKE_DP * density
     }
     private val rect = RectF()
+    private val bubble = Bubble(KEY_RADIUS_DP * density)
 
     private var groups: List<Pair<String, List<EmojiItem>>> = emptyList()
     private var recents: List<String> = emptyList()
@@ -173,7 +173,8 @@ class EmojiGrid(
         }
     }
 
-    private fun stripSlots() = groups.size + 2
+    /** The group icons, between the way back to the letters and delete. */
+    private fun stripSlots() = groups.size + STRIP_ENDS
 
     private fun tapStrip(x: Float) {
         val slot = (x / (width.toFloat() / stripSlots())).toInt()
@@ -236,13 +237,13 @@ class EmojiGrid(
         drawSearchRow(canvas)
         canvas.save()
         canvas.clipRect(0f, bar, width.toFloat(), gridBottom())
-        val baseline = cell / 2 - (emojiPaint.descent() + emojiPaint.ascent()) / 2
+        val baseline = emojiPaint.centeredOn(cell / 2)
         rows.forEachIndexed { index, row ->
             val top = bar + rowTops[index] - scrollY
             val rowHeight = if (row is Header) header else cell
             if (top + rowHeight < bar || top > gridBottom()) return@forEachIndexed
             when (row) {
-                is Header -> canvas.drawText(row.title, cell / 4, top + header * HEADER_BASELINE, labelPaint)
+                is Header -> canvas.drawText(row.title, cell * HEADER_INSET, top + header * HEADER_BASELINE, labelPaint)
                 is Cells -> row.items.forEachIndexed { column, item ->
                     canvas.drawText(shown(item), cell * column + cell / 2, top + baseline, emojiPaint)
                 }
@@ -255,40 +256,35 @@ class EmojiGrid(
 
     private fun drawSearchRow(canvas: Canvas) {
         Icons.drawSearch(canvas, bar / 2, bar / 2, ICON_DP * density, iconPaint)
-        canvas.drawText(searchHint, bar, bar / 2 - (labelPaint.descent() + labelPaint.ascent()) / 2, labelPaint)
+        canvas.drawText(searchHint, bar, labelPaint.centeredOn(bar / 2), labelPaint)
     }
 
     private fun drawStrip(canvas: Canvas) {
         val slot = width.toFloat() / stripSlots()
         val center = gridBottom() + strip / 2
+        fun middleOf(position: Int) = slot * position + slot / 2
         val text = LETTERS_LABEL
-        val textWidth = labelPaint.measureText(text)
-        canvas.drawText(text, slot / 2 - textWidth / 2, center - (labelPaint.descent() + labelPaint.ascent()) / 2, labelPaint)
+        canvas.drawText(text, middleOf(0) - labelPaint.measureText(text) / 2, labelPaint.centeredOn(center), labelPaint)
         groups.forEachIndexed { index, (_, items) ->
             val icon = items.firstOrNull()?.emoji ?: return@forEachIndexed
-            canvas.drawText(icon, slot * (index + 1.5f), center - (greyPaint.descent() + greyPaint.ascent()) / 2, greyPaint)
+            canvas.drawText(icon, middleOf(index + 1), greyPaint.centeredOn(center), greyPaint)
         }
-        Icons.draw(canvas, Icon.DELETE, slot * (stripSlots() - 0.5f), center, ICON_DP * density, iconPaint)
+        Icons.draw(canvas, Icon.DELETE, middleOf(stripSlots() - 1), center, ICON_DP * density, iconPaint)
     }
 
     private fun drawTones(canvas: Canvas) {
         if (tonePopup.isEmpty()) return
         rect.set(toneX, toneAnchorY, toneX + cell * tonePopup.size, toneAnchorY + cell)
-        fill.color = palette().key
-        canvas.drawRoundRect(rect, KEY_RADIUS_DP * density, KEY_RADIUS_DP * density, fill)
-        val baseline = toneAnchorY + cell / 2 - (emojiPaint.descent() + emojiPaint.ascent()) / 2
-        tonePopup.forEachIndexed { index, emoji ->
-            val left = toneX + cell * index
-            if (index == toneSelected) {
-                rect.set(left, toneAnchorY, left + cell, toneAnchorY + cell)
-                fill.color = palette().pressed
-                canvas.drawRoundRect(rect, KEY_RADIUS_DP * density, KEY_RADIUS_DP * density, fill)
-            }
-            canvas.drawText(emoji, left + cell / 2, baseline, emojiPaint)
-        }
+        bubble.draw(canvas, rect, tonePopup, toneSelected, emojiPaint, palette().key, palette().pressed)
     }
 
     private companion object {
+        /** The strip's slots that hold no group. */
+        const val STRIP_ENDS = 2
+
+        /** Where a group title starts, in cells. */
+        const val HEADER_INSET = 0.25f
+
         /** How far above the finger the skin tones open, in cells. */
         const val TONE_LIFT_CELLS = 1.5f
 

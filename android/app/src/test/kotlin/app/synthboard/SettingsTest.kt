@@ -31,7 +31,7 @@ import javax.crypto.KeyGenerator
 @Config(sdk = [35])
 class SettingsTest {
     private val context = ApplicationProvider.getApplicationContext<Context>()
-    private val uri = Uri.parse("content://${context.packageName}${TraceProvider.AUTHORITY_SUFFIX}/${TraceProvider.FILE}")
+    private val uri = Uri.parse("content://${TraceProvider.authority(context)}/${TraceProvider.FILE}")
 
     private fun buttons(view: View): List<Button> = when (view) {
         is Button -> listOf(view)
@@ -39,7 +39,7 @@ class SettingsTest {
         else -> emptyList()
     }
 
-    private fun provider(): TraceProvider = Robolectric.setupContentProvider(TraceProvider::class.java, context.packageName + TraceProvider.AUTHORITY_SUFFIX)
+    private fun provider(): TraceProvider = Robolectric.setupContentProvider(TraceProvider::class.java, TraceProvider.authority(context))
 
     private fun press(activity: SettingsActivity, label: Int) {
         val text = context.getString(label)
