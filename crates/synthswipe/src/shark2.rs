@@ -732,6 +732,74 @@ mod fit_tests {
     use crate::layout::Key;
 
     #[test]
+    fn a_hook_is_cut_at_its_sharpest_corner_whatever_the_direction() {
+        for (dx, dy) in [(1.0_f32, 0.0_f32), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0), (0.6, 0.8)] {
+            let at = |along: f32, side: f32| [dx * along - dy * side, dy * along + dx * side];
+            let path = [at(0.0, 0.0), at(1.0, 0.0), at(2.0, 0.0), at(2.0, 0.3), at(2.0, 0.6)];
+            let cut = without_end_hook(&path, 1.0).unwrap();
+            assert_eq!(cut.len(), 3, "{dx} {dy}");
+            assert_eq!(cut.last(), path.get(2));
+        }
+    }
+
+    #[test]
+    fn a_wide_curve_at_the_end_is_no_hook() {
+        let path = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [2.5, 0.3]];
+        assert!(without_end_hook(&path, 1.0).is_none());
+    }
+
+    #[test]
+    fn a_turn_further_than_a_key_from_the_end_is_the_word() {
+        let path = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [2.0, 1.2]];
+        assert!(without_end_hook(&path, 1.0).is_none());
+    }
+
+    #[test]
+    fn a_turn_closer_than_noise_to_the_end_is_ignored() {
+        let path = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [2.0, 0.1]];
+        assert!(without_end_hook(&path, 1.0).is_none());
+    }
+
+    #[test]
+    fn a_hook_needs_a_key_of_approach() {
+        let path = [[0.0, 0.0], [0.5, 0.0], [0.5, 0.5]];
+        assert!(without_end_hook(&path, 1.0).is_none());
+    }
+
+    #[test]
+    fn a_hook_scales_with_the_pitch() {
+        let path = [[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [20.0, 3.0], [20.0, 6.0]];
+        assert_eq!(without_end_hook(&path, 10.0).map(|cut| cut.len()), Some(3));
+        assert_eq!(without_end_hook(&path, 1.0), None);
+    }
+
+    #[test]
+    fn noise_and_approach_are_measured_in_keys() {
+        // A tail of a third of a key at a pitch of 10, above 0.15 key and so a hook.
+        let path = [[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [20.0, 3.3]];
+        assert_eq!(without_end_hook(&path, 10.0).map(|cut| cut.len()), Some(3));
+        // A tail of 0.1 key at the same pitch is noise.
+        let path = [[0.0, 0.0], [10.0, 0.0], [20.0, 0.0], [20.0, 1.0]];
+        assert_eq!(without_end_hook(&path, 10.0), None);
+        // Just a key of approach at a pitch of 2.
+        let path = [[0.0, 0.0], [2.0, 0.0], [2.0, 1.0]];
+        assert_eq!(without_end_hook(&path, 2.0).map(|cut| cut.len()), Some(2));
+        // Half a key of approach at a pitch of 2.
+        let path = [[1.0, 0.0], [2.0, 0.0], [2.0, 1.0]];
+        assert_eq!(without_end_hook(&path, 2.0), None);
+        // The same with a start out of the hook's reach, so that the walk ends on the approach.
+        let path = [[0.5, -0.5], [2.0, 0.0], [2.0, 1.0]];
+        assert_eq!(without_end_hook(&path, 2.0), None);
+    }
+
+    #[test]
+    fn the_sharpest_of_two_corners_wins() {
+        let path = [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [2.2, 0.2], [2.2, 0.6]];
+        let cut = without_end_hook(&path, 1.0).unwrap();
+        assert_eq!(cut.last(), path.get(3).or(path.get(2)));
+    }
+
+    #[test]
     fn a_gesture_fits_only_the_words_it_passes_through() {
         let keys = "abcdefghij".chars().enumerate().map(|(index, label)| Key { label, x: index as f32 * 10.0, y: 0.0 });
         let layout = Layout::new(keys).unwrap();

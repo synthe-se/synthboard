@@ -601,6 +601,51 @@ mod tests {
         assert!(Lexicon::new([("'-", 1.0)]).is_empty());
     }
 
+    /// Walks with a cost of 1 for `allowed(letter, tap)`, and collects what is visited.
+    fn walked(lexicon: &Lexicon, taps: usize, budget: usize, allowed: impl Fn(char, usize) -> bool) -> Vec<(String, f32, u8)> {
+        let letter = |id: u16| lexicon.alphabet().get(usize::from(id)).copied().unwrap_or('?');
+        let cost = |id: u16, tap: usize| allowed(letter(id), tap).then_some(1.0);
+        let mut found = Vec::new();
+        lexicon.along_taps(cost, taps, 100.0, budget, |entry, spent, extra| found.push((entry.surface.to_owned(), spent, extra)));
+        found
+    }
+
+    #[test]
+    fn the_walk_stops_at_its_budget_and_not_before() {
+        let lexicon = Lexicon::new([("ab", 1.0)]);
+        let spell = |letter: char, tap: usize| (letter, tap) == ('a', 0) || (letter, tap) == ('b', 1);
+        assert_eq!(walked(&lexicon, 2, 3, spell).len(), 1);
+        assert_eq!(walked(&lexicon, 2, 2, spell).len(), 0);
+    }
+
+    #[test]
+    fn a_completion_stops_at_six_extra_letters_and_counts_them() {
+        let lexicon = Lexicon::new([("abcdefg", 1.0), ("hijklmno", 1.0)]);
+        let first = |letter: char, tap: usize| tap == 0 && (letter == 'a' || letter == 'h');
+        assert_eq!(walked(&lexicon, 1, 1000, first), [("abcdefg".to_owned(), 1.0, 6)]);
+    }
+
+    #[test]
+    fn the_first_tap_cannot_stay_on_the_root() {
+        let lexicon = Lexicon::new([("a", 1.0), ("b", 1.0)]);
+        let allowed = |letter: char, tap: usize| letter == 'a' || (letter == 'b' && tap == 1);
+        assert!(walked(&lexicon, 2, 1000, allowed).iter().all(|(word, ..)| word != "b"));
+    }
+
+    #[test]
+    fn staying_on_a_letter_adds_its_cost() {
+        let lexicon = Lexicon::new([("ab", 1.0)]);
+        let spell = |letter: char, tap: usize| (letter == 'a' && tap < 2) || (letter == 'b' && tap == 2);
+        assert_eq!(walked(&lexicon, 3, 1000, spell), [("ab".to_owned(), 3.0, 0)]);
+    }
+
+    #[test]
+    fn a_completion_keeps_what_the_taps_cost() {
+        let lexicon = Lexicon::new([("abc", 1.0)]);
+        let first = |letter: char, tap: usize| letter == 'a' && tap == 0;
+        assert_eq!(walked(&lexicon, 1, 1000, first), [("abc".to_owned(), 1.0, 2)]);
+    }
+
     #[test]
     fn the_children_of_a_node_sit_side_by_side() {
         let lexicon = Lexicon::new([("bonjour", 1.0), ("bol", 1.0), ("car", 1.0), ("cat", 1.0), ("dur", 1.0), ("zoo", 1.0)]);

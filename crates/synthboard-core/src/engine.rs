@@ -1392,6 +1392,19 @@ impl Engine {
         }
     }
 
+    /// Takes back what earlier picks taught for this gesture: a new pick rejects them.
+    fn take_back_other_picks(&mut self, chosen: &str) {
+        let lower = chosen.to_lowercase();
+        let Some(pending) = self.pending.as_mut() else {
+            return;
+        };
+        let (kept, rejected) = std::mem::take(&mut pending.taught).into_iter().partition(|(word, _)| *word == lower);
+        pending.taught = kept;
+        for (word, shape) in &rejected as &Vec<(String, Vec<[f32; 2]>)> {
+            self.take_back_traces(word, [shape.as_slice()]);
+        }
+    }
+
     /// Drops the word waiting to be kept: it was rejected, and whatever the bar
     /// taught for it goes too.
     fn drop_pending(&mut self) {
@@ -2788,6 +2801,7 @@ impl Engine {
         let chosen = word.alternatives.remove(slot);
         self.trace(format!("C\t{chosen}"));
         let gesture = std::mem::take(&mut word.gesture);
+        self.take_back_other_picks(&chosen);
         let taught = self.teach(&chosen, &gesture);
         word.gesture = gesture;
         if let Some(pending) = self.pending.as_mut() {
@@ -3099,6 +3113,82 @@ mod tests {
         assert!(holds_words(&tokens("c'est l'été"), &[learned("c'est"), learned("l'"), learned("été")]));
         assert!(!holds_words(&tokens("dit bonjou"), &[learned("bonjour")]));
         assert!(holds_words(&tokens(""), &[]));
+    }
+
+    #[test]
+    fn a_pick_undone_on_the_bar_keeps_no_trace_of_it() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        rig.tap_at((540.0, 10.0));
+        assert_eq!(rig.text, "où");
+        rig.tap_at((540.0, 10.0));
+        assert_eq!(rig.text, "ou");
+        rig.engine.confirm_pending();
+        assert!(!rig.engine.fresh.iter().any(|(word, _)| word == "où"));
+        assert!(rig.engine.memory.to_text().lines().all(|line| !line.contains("~où")));
+        assert!(rig.engine.fresh.iter().any(|(word, _)| word == "ou"));
+    }
+
+    #[test]
+    fn the_last_pick_stands_after_changing_twice() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        for _ in 0..3 {
+            rig.tap_at((540.0, 10.0));
+        }
+        assert_eq!(rig.text, "où");
+        rig.engine.confirm_pending();
+        assert!(rig.engine.fresh.iter().any(|(word, _)| word == "où"));
+        assert!(!rig.engine.fresh.iter().any(|(word, _)| word == "ou"));
+    }
+
+    #[test]
+    fn lifting_a_finger_releases_the_key() {
+        let mut rig = plain_rig();
+        let (x, y) = rig.center("a");
+        rig.send(Event::Down { pointer: 0, x, y, t: 1 });
+        assert_ne!(rig.engine.pressed, -1);
+        rig.send(Event::Up { pointer: 0, x, y, t: 2 });
+        assert_eq!(rig.engine.pressed, -1);
+    }
+
+    #[test]
+    fn forgetting_a_word_takes_only_it_out_of_the_bar() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let before = rig.engine.last_word.as_ref().unwrap().alternatives.clone();
+        let gone = before.first().unwrap().clone();
+        rig.engine.forget(&gone);
+        let after = rig.engine.last_word.as_ref().unwrap().alternatives.clone();
+        assert!(!after.contains(&gone));
+        assert_eq!(after.len(), before.len() - 1);
+    }
+
+    fn release_on_forget(y: f32) -> bool {
+        let mut rig = plain_rig();
+        rig.engine.touch = Touch::Forget { word: "bonjour".to_owned() };
+        rig.engine.lifted(0.0, y, 1);
+        rig.engine.memory.is_blocked("bonjour")
+    }
+
+    #[test]
+    fn forgetting_takes_a_release_close_to_the_bar() {
+        let reach = plain_rig().engine.bar_height() * FORGET_REACH;
+        assert!(release_on_forget(reach * 0.9));
+        assert!(!release_on_forget(reach));
+        assert!(!release_on_forget(reach * 1.1));
+    }
+
+    #[test]
+    fn a_second_try_still_offers_a_full_bar() {
+        let mut rig = plain_rig();
+        let words = ["ou", "où", "oû", "oú", "oü", "oũ", "où"].map(|word| (word, 120.0));
+        rig.engine.set_lexicon(Arc::new(Lexicon::new(words)));
+        rig.swipe("ou");
+        let gesture = rig.engine.last_word.as_ref().unwrap().gesture.clone();
+        clear_word(&mut rig);
+        let words = rig.engine.snapshot().unwrap().rank(&gesture);
+        assert_eq!(words.len(), SUGGESTIONS, "{words:?}");
     }
 
     #[test]

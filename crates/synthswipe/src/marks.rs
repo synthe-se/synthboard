@@ -378,6 +378,48 @@ mod tests {
         assert!(is_straight(&stroke(6.0), 3.0));
     }
 
+    fn at(x: f32, y: f32) -> Sample {
+        Sample { x, y, t_ms: 0 }
+    }
+
+    #[test]
+    fn a_stroke_is_straight_at_any_angle() {
+        assert!(is_straight(&[at(0.0, 0.0), at(2.0, 2.0), at(4.0, 4.0)], 1.0));
+        assert!(is_straight(&[at(4.0, 0.0), at(2.0, 2.0), at(0.0, 4.0)], 1.0));
+        assert!(is_straight(&[at(0.0, 4.0), at(0.0, 2.0), at(0.0, 0.0)], 1.0));
+    }
+
+    #[test]
+    fn a_bent_stroke_is_not_straight_at_any_angle() {
+        let beyond = STRAIGHT_KEYS * 1.2;
+        let side = beyond * std::f32::consts::SQRT_2;
+        assert!(!is_straight(&[at(0.0, 0.0), at(2.0 + side, 2.0), at(4.0, 4.0)], 1.0));
+        assert!(!is_straight(&[at(0.0, 0.0), at(2.0, 2.0 + side), at(4.0, 4.0)], 1.0));
+        assert!(!is_straight(&[at(0.0, 0.0), at(2.0 - side, 2.0), at(4.0, 4.0)], 1.0));
+        assert!(!is_straight(&[at(0.0, 0.0), at(3.0, beyond), at(6.0, 0.0)], 1.0));
+        assert!(!is_straight(&[at(0.0, 0.0), at(beyond, 3.0), at(0.0, 6.0)], 1.0));
+        assert!(!is_straight(&[at(1.0, 1.0), at(4.0, 1.0 + beyond), at(7.0, 1.0)], 1.0));
+    }
+
+    #[test]
+    fn straightness_is_measured_from_the_line_and_in_keys() {
+        assert!(is_straight(&[at(1.0, 1.0), at(4.0, 1.0), at(7.0, 1.0)], 1.0));
+        assert!(is_straight(&[at(0.0, 0.0), at(5.0, STRAIGHT_KEYS * 2.0 * 0.9), at(10.0, 0.0)], 2.0));
+    }
+
+    #[test]
+    fn a_stop_counts_for_letters_inside_and_against_letters_elsewhere() {
+        let stop = [Mark::Stop('u')];
+        assert!(agreement("pue", &stop) > 0.0);
+        assert!(agreement("sel", &stop) < 0.0);
+    }
+
+    #[test]
+    fn a_stroke_exactly_at_the_limit_is_still_straight() {
+        assert!(is_straight(&[at(0.0, 0.0), at(3.0, STRAIGHT_KEYS), at(6.0, 0.0)], 1.0));
+        assert!(is_straight(&[at(0.0, 0.0), at(MIN_STROKE_KEYS, 0.0)], 1.0));
+    }
+
     #[test]
     fn a_turn_is_measured_wherever_it_stands_on_the_board() {
         assert!(turning([0.0, 1.0], [1.0, 1.0], [2.0, 1.0]).abs() < 1e-5);
