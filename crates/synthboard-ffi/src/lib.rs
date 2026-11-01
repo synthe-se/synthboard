@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard, Once, PoisonError};
 
 use synthboard_core::codec::{Wire, decode};
 use synthboard_core::{Catalog, EmojiGroup, Engine, Event, Field, NextWords, Step, wire_enum};
+use synthboard_seal::KEY_BYTES;
 use synthswipe::{Affinities, Grammar, Lexicon};
 use zeroize::Zeroizing;
 
@@ -22,7 +23,6 @@ wire_enum! {
         Step { event: Event },
         MayRead { field: Field },
         SetTraceKey { hex: String },
-        Preview,
         LoadLanguage { affinities: Vec<u8>, forms: Vec<u8>, next_words: Vec<u8> },
         LoadEmoji { bytes: Vec<u8> },
         LoadLexicon { bytes: Vec<u8> },
@@ -40,7 +40,6 @@ wire_enum! {
         Done,
         Stepped { step: Step },
         Flag { on: bool },
-        Text { text: String },
         Bytes { bytes: Vec<u8> },
         Emoji { groups: Vec<EmojiGroup> },
     }
@@ -80,7 +79,7 @@ fn opened(sealed: &[u8], secret: Vec<u8>) -> Option<Zeroizing<Vec<u8>>> {
     if sealed.is_empty() {
         return Some(Zeroizing::new(Vec::new()));
     }
-    let key = Zeroizing::new(<[u8; 32]>::try_from(secret.as_slice()).ok()?);
+    let key = Zeroizing::new(<[u8; KEY_BYTES]>::try_from(secret.as_slice()).ok()?);
     synthboard_seal::open(&key, sealed).ok().map(Zeroizing::new)
 }
 
@@ -108,7 +107,6 @@ impl Keyboard {
                 self.set_trace_key(&hex);
                 Reply::Done
             }
-            Call::Preview => Reply::Text { text: self.preview() },
             Call::LoadLanguage { affinities, forms, next_words } => {
                 self.load_language(&affinities, &forms, &next_words);
                 Reply::Done
@@ -270,7 +268,7 @@ mod tests {
         let keyboard = Keyboard::new();
         let field = Field { input_type: 0x81, ime_options: 0 };
         assert_eq!(answer(&keyboard, &Call::MayRead { field }), Some(Reply::Flag { on: false }));
-        assert_eq!(answer(&keyboard, &Call::Preview), Some(Reply::Text { text: String::new() }));
+        assert_eq!(answer(&keyboard, &Call::SetTraceKey { hex: String::new() }), Some(Reply::Done));
     }
 
     #[test]

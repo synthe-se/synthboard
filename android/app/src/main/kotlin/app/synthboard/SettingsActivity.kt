@@ -27,6 +27,7 @@ object Settings {
     const val HAPTICS = "haptics"
     const val TRAIL = "trail"
     const val HEIGHT = "height"
+    const val FULL_HEIGHT = 100
     const val ERASURES = "erasures"
     const val TRACES = "traces"
     const val TONE = "tone"
@@ -66,7 +67,7 @@ class SettingsActivity : Activity() {
         title = "Synthboard"
         list = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            val gutter = (20 * resources.displayMetrics.density).toInt()
+            val gutter = (GUTTER_DP * resources.displayMetrics.density).toInt()
             setPadding(gutter, gutter, gutter, gutter)
         }
         setContentView(ScrollView(this).apply {
@@ -97,8 +98,8 @@ class SettingsActivity : Activity() {
     private fun heading(text: Int) {
         list.addView(TextView(this).apply {
             setText(text)
-            textSize = 15f
-            setPadding(0, (20 * resources.displayMetrics.density).toInt(), 0, 8)
+            textSize = HEADING_SP
+            setPadding(0, (GUTTER_DP * resources.displayMetrics.density).toInt(), 0, HEADING_GAP)
         })
     }
 
@@ -125,15 +126,15 @@ class SettingsActivity : Activity() {
         fun show(percent: Int) {
             label.text = getString(R.string.height, percent)
         }
-        show(store.getInt(Settings.HEIGHT, 100))
+        show(store.getInt(Settings.HEIGHT, Settings.FULL_HEIGHT))
         list.addView(label)
         list.addView(SeekBar(this).apply {
-            max = 50
-            progress = store.getInt(Settings.HEIGHT, 100) - 75
+            max = MAX_HEIGHT - MIN_HEIGHT
+            progress = store.getInt(Settings.HEIGHT, Settings.FULL_HEIGHT) - MIN_HEIGHT
             setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
                 override fun onProgressChanged(bar: SeekBar, value: Int, fromUser: Boolean) {
-                    show(value + 75)
-                    if (fromUser) store.edit().putInt(Settings.HEIGHT, value + 75).apply()
+                    show(value + MIN_HEIGHT)
+                    if (fromUser) store.edit().putInt(Settings.HEIGHT, value + MIN_HEIGHT).apply()
                 }
 
                 override fun onStartTrackingTouch(bar: SeekBar) = Unit
@@ -232,6 +233,11 @@ class SettingsActivity : Activity() {
     private companion object {
         const val EXPORT = 1
         const val TRY_OUT_LINES = 4
+        const val GUTTER_DP = 20
+        const val HEADING_SP = 15f
+        const val HEADING_GAP = 8
+        const val MIN_HEIGHT = 75
+        const val MAX_HEIGHT = 125
         const val TAILSCALE = "com.tailscale.ipn"
     }
 }

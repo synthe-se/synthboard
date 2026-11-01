@@ -17,6 +17,10 @@ import app.synthboard.core.DrawnKey
 import app.synthboard.core.EmojiItem
 import app.synthboard.core.Event
 import app.synthboard.core.Icon
+import app.synthboard.core.SLOT_CENTERS
+
+/** The corners of keys and of everything drawn like them. */
+internal const val KEY_RADIUS_DP = 8f
 
 /** Draws what the core describes and reports touches. It decides nothing. */
 @SuppressLint("ViewConstructor")
@@ -219,15 +223,15 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         text.color = palette.text
         val baseline = barHeight / 2 - (text.descent() + text.ascent()) / 2
         if (undoOffered) {
-            canvas.drawText(context.getString(R.string.undo), width * 0.5f, baseline, text)
+            canvas.drawText(context.getString(R.string.undo), width * CENTER, baseline, text)
             return
         }
         if (trailActive) {
             // The word forming under the finger takes the bar's centre.
-            canvas.drawText(preview, width * 0.5f, baseline, text)
+            canvas.drawText(preview, width * CENTER, baseline, text)
             return
         }
-        val slots = listOf(width * 0.16f, width * 0.5f, width * 0.84f)
+        val slots = SLOT_CENTERS.map { width * it }
         val room = width * SLOT_SHARE
         suggestions.zip(slots).forEach { (word, x) ->
             // A whole phrasing narrows to its slot rather than run into the next one.
@@ -249,9 +253,9 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         canvas.drawText(shown, barHeight, center - (text.descent() + text.ascent()) / 2, text)
         val caret = barHeight + text.measureText(shown) + density
         iconPaint.style = Paint.Style.STROKE
-        canvas.drawLine(caret, center - SUGGESTION_SP * density * 0.6f, caret, center + SUGGESTION_SP * density * 0.6f, iconPaint)
+        canvas.drawLine(caret, center - SUGGESTION_SP * density * CARET_REACH, caret, center + SUGGESTION_SP * density * CARET_REACH, iconPaint)
         text.textAlign = Paint.Align.CENTER
-        val cross = ICON_DP * density * 0.25f
+        val cross = ICON_DP * density * CLEAR_CROSS_SHARE
         val x = width - barHeight / 2
         canvas.drawLine(x - cross, center - cross, x + cross, center + cross, iconPaint)
         canvas.drawLine(x + cross, center - cross, x - cross, center + cross, iconPaint)
@@ -282,8 +286,8 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
             val solid = key.icon == Icon.SHIFT && shiftLook > 0
             Icons.draw(canvas, key.icon, rect.centerX(), rect.centerY(), ICON_DP * density, iconPaint, solid)
             if (key.icon == Icon.SHIFT && shiftLook == 2) {
-                val half = ICON_DP * density * 0.33f
-                val y = rect.centerY() + ICON_DP * density * 0.62f
+                val half = ICON_DP * density * LOCK_BAR_SHARE
+                val y = rect.centerY() + ICON_DP * density * LOCK_BAR_DROP
                 iconPaint.style = Paint.Style.STROKE
                 canvas.drawLine(rect.centerX() - half, y, rect.centerX() + half, y, iconPaint)
             }
@@ -417,7 +421,6 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         const val ICON_STROKE_DP = 2.2f
         const val KEY_GAP_X_DP = 2.75f
         const val KEY_GAP_Y_DP = 6.25f
-        const val KEY_RADIUS_DP = 8f
         const val MIN_BOTTOM_DP = 61f
         const val KEY_SP = 25f
         const val MAX_TEXT_SHARE = 0.56f
@@ -426,6 +429,15 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
         const val FUNCTION_SP = 16f
         const val SUGGESTION_SP = 16f
         const val SLOT_SHARE = 0.3f
+        const val CENTER = 0.5f
+
+        /** How far the search caret reaches from the middle, in text heights. */
+        const val CARET_REACH = 0.6f
+
+        /** Half the clear cross, and the caps lock bar, as shares of an icon. */
+        const val CLEAR_CROSS_SHARE = 0.25f
+        const val LOCK_BAR_SHARE = 0.33f
+        const val LOCK_BAR_DROP = 0.62f
         const val POPUP_HEIGHT_DP = 52.8f
         const val TRAIL_DP = 8f
         const val TRAIL_ALPHA = 216

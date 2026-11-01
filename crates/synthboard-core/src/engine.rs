@@ -3,13 +3,14 @@
 
 use std::sync::Arc;
 
+use synthboard_seal::KEY_BYTES;
 use synthswipe::{Affinities, Grammar, Layout, Lexicon, Params, signature, signature_distance, SENTENCE_START, Sample, correct, decode_in_context, tokens};
 use unicode_segmentation::UnicodeSegmentation;
 use zeroize::Zeroize;
 
 use crate::emoji::Catalog;
 use crate::memory::Memory;
-use crate::predict::NextWords;
+use crate::predict::{NextWords, mail_domains};
 use crate::board::{Action, Alphabet, BAR_DP, Board, Layer, Purpose, Screen, popup_of};
 use crate::wire::{Command, DrawnKey, Haptic, Icon};
 
@@ -68,6 +69,9 @@ const TRACE_LEADS: f32 = 0.35;
 /// Matching traces that make a word lead however loose they are: the user has
 /// chosen it twice for this gesture, and that decides.
 const TRACE_VOTES: u32 = 2;
+/// Where the bar's three slots sit, left to right, as shares of its width. The
+/// shell draws them from this same list.
+pub const SLOT_CENTERS: [f32; 3] = [0.16, 0.5, 0.84];
 /// What a screen reader says for a key of a field that must stay secret.
 const SECRET_KEY: &str = "•";
 /// The mirrors' room, so that writing into them does not leave old copies behind.
@@ -110,7 +114,8 @@ crate::wire_struct! {
 impl Field {
     fn base_layer(self) -> Layer {
         match self.input_type & android::CLASS_MASK {
-            android::CLASS_NUMBER | android::CLASS_DATETIME => Layer::Numbers,
+            android::CLASS_NUMBER => Layer::Numbers,
+            android::CLASS_DATETIME => Layer::Date,
             android::CLASS_PHONE => Layer::Phone,
             _ => Layer::Alpha,
         }
@@ -332,10 +337,10 @@ pub struct Engine {
     affinities: Option<Arc<Affinities>>,
     grammar: Option<Arc<Grammar>>,
     /// The owner's public key. Without one, no trace can exist.
-    trace_key: Option<[u8; 32]>,
+    trace_key: Option<[u8; KEY_BYTES]>,
     /// The public half of the memory key: saving needs no secret, so it works
     /// on a locked phone, and plain memory never leaves Rust.
-    memory_key: Option<[u8; 32]>,
+    memory_key: Option<[u8; KEY_BYTES]>,
     layout_traced: bool,
     next_words: Option<Arc<NextWords>>,
     predictions: Vec<String>,
@@ -639,12 +644,12 @@ impl Engine {
     }
 
     /// Allows traces, sealed for the owner of this public key.
-    pub fn set_trace_key(&mut self, key: [u8; 32]) {
+    pub fn set_trace_key(&mut self, key: [u8; KEY_BYTES]) {
         self.trace_key = Some(key);
     }
 
     /// Sets the public key that memory is sealed to.
-    pub fn set_memory_key(&mut self, key: [u8; 32]) {
+    pub fn set_memory_key(&mut self, key: [u8; KEY_BYTES]) {
         self.memory_key = Some(key);
     }
 
@@ -1403,7 +1408,7 @@ impl Engine {
     fn open_popup(&mut self, key: usize, text: &str) {
         let upper = self.shift != Shift::Off;
         let hint = self.key(key).map(|k| k.hint.clone()).filter(|hint| !hint.is_empty());
-        let items: Vec<String> = popup_of(text)
+        let items: Vec<String> = popup_of(text, self.field.purpose())
             .into_iter()
             .map(|item| if upper { item.to_uppercase() } else { item })
             .chain(hint)
@@ -1996,15 +2001,17 @@ impl Engine {
     }
 
     fn show_alternatives(&mut self, alternatives: &[String]) {
-        let slot = |index: usize| alternatives.get(index).cloned().unwrap_or_default();
+        let domains = self.offered_domains();
+        let shown = if domains.is_empty() { alternatives } else { &domains };
+        let slot = |index: usize| shown.get(index).cloned().unwrap_or_default();
         self.out.push(Command::Suggestions { center: slot(0), left: slot(1), right: slot(2) });
     }
 
     fn slot_at(&self, x: f32) -> usize {
-        // Slots are left, centre at 36% of the width, right (B-1).
-        if x < self.width * 0.32 {
+        let [left, center, right] = SLOT_CENTERS;
+        if x < self.width * (left + center) / 2.0 {
             1
-        } else if x < self.width * 0.68 {
+        } else if x < self.width * (center + right) / 2.0 {
             0
         } else {
             2
@@ -2013,7 +2020,7 @@ impl Engine {
 
     /// The word shown at a position of the bar, if any.
     fn slot_word(&self, x: f32) -> Option<String> {
-        if self.search.is_some() {
+        if self.search.is_some() || !self.offered_domains().is_empty() {
             return None;
         }
         let slot = self.slot_at(x);
@@ -2080,6 +2087,19 @@ impl Engine {
         }
     }
 
+    /// The mail domains the bar offers, in slot order.
+    fn offered_domains(&self) -> Vec<String> {
+        if self.field.purpose() == Purpose::Email { mail_domains(&self.before) } else { Vec::new() }
+    }
+
+    /// Finishes the address with a domain, in place of what was typed of it.
+    fn complete_domain(&mut self, domain: &str) {
+        let typed = self.before.rsplit_once('@').map_or(0, |(_, typed)| utf16_len(typed));
+        self.typing = None;
+        self.delete_units(typed);
+        self.insert_raw(domain);
+    }
+
     fn tap_suggestion(&mut self, x: f32) {
         if self.undo.is_some() {
             self.restore_deleted();
@@ -2095,6 +2115,10 @@ impl Engine {
             return;
         }
         let slot = self.slot_at(x);
+        if let Some(domain) = self.offered_domains().get(slot) {
+            self.complete_domain(domain);
+            return;
+        }
         if let Some(typing) = self.typing.take() {
             if let Some(word) = typing.offered.get(slot).cloned() {
                 self.delete_units(utf16_len(&typing.text));
@@ -2390,7 +2414,7 @@ mod tests {
         let (ox, oy) = rig.center("o");
         let t = rig.t + 700;
         rig.send(Event::Down { pointer: 0, x, y, t });
-        assert_eq!(popup_of("b"), [] as [std::string::String; 0]);
+        assert_eq!(popup_of("b", Purpose::Text), [] as [std::string::String; 0]);
         let (ax, ay) = rig.center("e");
         rig.send(Event::Up { pointer: 0, x, y, t: t + 10 });
         rig.text.clear();
@@ -3099,10 +3123,10 @@ mod tests {
     fn the_bar_has_three_slots_at_fixed_places() {
         let rig = plain_rig();
         assert_eq!(rig.engine.slot_at(0.0), 1);
-        assert_eq!(rig.engine.slot_at(1080.0 * 0.32 - 1.0), 1);
-        assert_eq!(rig.engine.slot_at(1080.0 * 0.32), 0);
-        assert_eq!(rig.engine.slot_at(1080.0 * 0.68 - 1.0), 0);
-        assert_eq!(rig.engine.slot_at(1080.0 * 0.68), 2);
+        assert_eq!(rig.engine.slot_at(1080.0 * 0.33 - 1.0), 1);
+        assert_eq!(rig.engine.slot_at(1080.0 * 0.33 + 1.0), 0);
+        assert_eq!(rig.engine.slot_at(1080.0 * 0.67 - 1.0), 0);
+        assert_eq!(rig.engine.slot_at(1080.0 * 0.67 + 1.0), 2);
         assert!((rig.engine.bar_height() - BAR_DP * DENSITY).abs() < 0.01);
     }
 
@@ -3363,6 +3387,57 @@ mod tests {
         let (x, y) = rig.center("a");
         let step = rig.send(Event::Hover { x, y });
         assert!(step.commands.contains(&Command::Announce { text: SECRET_KEY.to_owned(), icon: Icon::None }));
+    }
+
+    fn mail_rig() -> Rig {
+        Rig::new(Field { input_type: android::CLASS_TEXT | android::EMAIL, ime_options: 0 })
+    }
+
+    #[test]
+    fn an_email_field_has_its_at_key_beside_the_space_bar() {
+        let rig = mail_rig();
+        let (_, at) = rig.center("@");
+        assert!(at > rig.center("w").1);
+    }
+
+    #[test]
+    fn after_the_at_sign_the_bar_offers_mail_domains() {
+        let mut rig = mail_rig();
+        rig.tap("@");
+        let offered = rig.engine.offered_domains();
+        assert_eq!(offered.first().map(String::as_str), Some("gmail.com"));
+        assert_eq!(offered.len(), 3);
+    }
+
+    #[test]
+    fn a_domain_replaces_what_was_typed_of_it() {
+        let mut rig = mail_rig();
+        rig.send(Event::Text { text: "john@gm".to_owned() });
+        rig.tap_at((540.0, 10.0));
+        assert_eq!(rig.text, "john@gmail.com");
+    }
+
+    #[test]
+    fn domains_never_appear_outside_email_fields() {
+        let mut rig = plain_rig();
+        rig.send(Event::Text { text: "john@".to_owned() });
+        assert_eq!(rig.engine.offered_domains(), Vec::<String>::new());
+    }
+
+    #[test]
+    fn each_field_opens_on_its_own_keys() {
+        let of = |input_type| Field { input_type, ime_options: 0 }.base_layer();
+        assert_eq!(of(android::CLASS_TEXT), Layer::Alpha);
+        assert_eq!(of(android::CLASS_NUMBER), Layer::Numbers);
+        assert_eq!(of(android::CLASS_PHONE), Layer::Phone);
+        assert_eq!(of(android::CLASS_DATETIME), Layer::Date);
+    }
+
+    #[test]
+    fn a_long_press_on_the_dot_of_an_address_offers_endings() {
+        assert_eq!(popup_of(".", Purpose::Url).first().map(String::as_str), Some(".com"));
+        assert_eq!(popup_of(".", Purpose::Email).len(), 4);
+        assert_eq!(popup_of(".", Purpose::Text), Vec::<String>::new());
     }
 
     #[test]

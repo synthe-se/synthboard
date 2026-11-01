@@ -195,7 +195,7 @@ impl Lexicon {
             lexicon.surface_ends.push(u32::try_from(lexicon.surfaces.len()).unwrap_or(u32::MAX));
             lexicon.letters.extend(keys.iter().map(letter_id));
             lexicon.letter_ends.push(u32::try_from(lexicon.letters.len()).unwrap_or(u32::MAX));
-            lexicon.weights.push(weight.clamp(0.0, 255.0).round() as u8);
+            lexicon.weights.push(weight.clamp(0.0, f32::from(u8::MAX)).round() as u8);
             lexicon.languages.push(languages);
         }
         lexicon.alphabet = alphabet;

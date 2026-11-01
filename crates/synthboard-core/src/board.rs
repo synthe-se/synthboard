@@ -24,6 +24,8 @@ pub enum Layer {
     Numbers,
     /// The dial pad for phone fields.
     Phone,
+    /// Digits with `/` and `:`, for date and time fields.
+    Date,
 }
 
 /// What the bottom row offers next to the space bar.
@@ -67,6 +69,10 @@ const PHONE: &str = "1 2 3 +\n\
                      4 5 6 *\n\
                      7 8 9 del\n\
                      # 0 space enter";
+const DATE: &str = "1 2 3 /\n\
+                    4 5 6 :\n\
+                    7 8 9 del\n\
+                    abc 0 space enter";
 const LETTER_BOTTOM: &str = "sym:1.5 , emoji space:4 . enter:1.5";
 const SYMBOL_BOTTOM: &str = "abc:1.5 , emoji space:4 . enter:1.5";
 const PASSWORD_BOTTOM: &str = "sym:1.5 , space:5 . enter:1.5";
@@ -89,9 +95,15 @@ const POPUPS: &[(char, &str)] = &[
     ('"', "« » “ ”"),
 ];
 
-/// The accent popup of a key, if it has one.
+/// Endings offered by the `.` of an address field.
+const ADDRESS_ENDINGS: &str = ".com .fr .org .net";
+
+/// What a long press on a key offers, if anything, in a field of this purpose.
 #[must_use]
-pub fn popup_of(text: &str) -> Vec<String> {
+pub fn popup_of(text: &str, purpose: Purpose) -> Vec<String> {
+    if text == "." && matches!(purpose, Purpose::Url | Purpose::Email) {
+        return ADDRESS_ENDINGS.split(' ').map(str::to_owned).collect();
+    }
     let mut letters = text.chars();
     let (Some(base), None) = (letters.next(), letters.next()) else {
         return Vec::new();
@@ -150,6 +162,10 @@ fn parse_token(token: &str) -> (Option<Action>, String, f32) {
     (action, label.to_owned(), width)
 }
 
+/// Keys in a row of the digit pads.
+const DIGIT_COLUMNS: f32 = 4.0;
+/// Keys in the widest row of letters.
+const LETTER_COLUMNS: f32 = 10.0;
 /// Height of one key row with its gaps, in density-independent pixels. Taken
 /// from Gboard on a Pixel 9a, so that thumb memory carries over.
 pub const ROW_DP: f32 = 62.4;
@@ -196,6 +212,7 @@ impl Board {
             (Layer::MoreSymbols, _) => [MORE_SYMBOLS, SYMBOL_BOTTOM],
             (Layer::Numbers, _) => [NUMBERS, ""],
             (Layer::Phone, _) => [PHONE, ""],
+            (Layer::Date, _) => [DATE, ""],
         };
         let lines: Vec<&str> = rows.iter().flat_map(|text| text.lines()).collect();
         let bar = BAR_DP * density;
@@ -203,8 +220,8 @@ impl Board {
         let available = (height * MAX_HEIGHT_SHARE - bar).max(0.0) / lines.len().max(1) as f32;
         let row_height = (ROW_DP * density * height_scale).min(available.max(MIN_ROW_DP * density));
         let key_width = match layer {
-            Layer::Numbers | Layer::Phone => width / 4.0,
-            _ => width / 10.0,
+            Layer::Numbers | Layer::Phone | Layer::Date => width / DIGIT_COLUMNS,
+            _ => width / LETTER_COLUMNS,
         };
         let mut keys = Vec::new();
         let mut y = bar;
@@ -375,8 +392,8 @@ mod tests {
 
     #[test]
     fn popups_come_from_data_and_ignore_case() {
-        assert_eq!(popup_of("e").first().map(String::as_str), Some("é"));
-        assert_eq!(popup_of("E").first().map(String::as_str), Some("é"));
-        assert_eq!(popup_of("z"), [] as [std::string::String; 0]);
+        assert_eq!(popup_of("e", Purpose::Text).first().map(String::as_str), Some("é"));
+        assert_eq!(popup_of("E", Purpose::Text).first().map(String::as_str), Some("é"));
+        assert_eq!(popup_of("z", Purpose::Text), [] as [std::string::String; 0]);
     }
 }

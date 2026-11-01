@@ -10,7 +10,11 @@ use hpke::{Deserializable, Kem, OpModeR, OpModeS, Serializable, single_shot_open
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
-const KEY_BYTES: usize = 32;
+/// The size of a public or secret key.
+pub const KEY_BYTES: usize = 32;
+const HEX_BASE: u32 = 16;
+const HEX_BITS: u8 = 4;
+const HEX_DIGIT: u8 = 15;
 const VERSION: u8 = 2;
 const KEY_ID_BYTES: usize = 4;
 const HEADER_BYTES: usize = 1 + KEY_ID_BYTES;
@@ -158,10 +162,10 @@ mod legacy {
 /// Lowercase hex, for one record per line in an append-only text file.
 #[must_use]
 pub fn to_hex(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    const DIGITS: &[u8] = b"0123456789abcdef";
     bytes
         .iter()
-        .flat_map(|byte| [byte >> 4, byte & 15])
+        .flat_map(|byte| [byte >> HEX_BITS, byte & HEX_DIGIT])
         .map(|digit| char::from(DIGITS.get(usize::from(digit)).copied().unwrap_or(b'0')))
         .collect()
 }
@@ -177,9 +181,9 @@ pub fn from_hex(text: &str) -> Option<Vec<u8>> {
         .0
         .iter()
         .map(|&[high, low]| {
-            let high = char::from(high).to_digit(16)?;
-            let low = char::from(low).to_digit(16)?;
-            u8::try_from(high * 16 + low).ok()
+            let high = char::from(high).to_digit(HEX_BASE)?;
+            let low = char::from(low).to_digit(HEX_BASE)?;
+            u8::try_from(high * HEX_BASE + low).ok()
         })
         .collect()
 }

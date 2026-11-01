@@ -13,6 +13,7 @@ Synthboard is a privacy-first, offline Android swipe keyboard with a reusable op
 - Almost no timers. Each one needs a written justification beside it. The shell owns a single deadline that the engine sets.
 - Event-based: the engine is a state machine that takes `Event` and returns `Command`. No polling.
 - Absolute DRY: one piece of logic lives in exactly one place. A second copy is a bug, including across Rust and Kotlin.
+- No magic numbers. A number with a meaning has a name and, unless the name says it all, a comment saying where it comes from: a unit, a measurement, a specification or a tuning run. Only 0, 1, -1, 2 as a half or double, and drawing data such as an icon's points stay bare.
 - Logic belongs in Rust. Kotlin stays a thin shell that draws, forwards events and calls Android.
 - Latest stable dependencies, each one justified. New external data or code is logged in `PROVENANCE.md`.
 - Low memory and optimised logic: flat storage, no allocation in hot paths, no linear scan where an index fits. Measure on the device.

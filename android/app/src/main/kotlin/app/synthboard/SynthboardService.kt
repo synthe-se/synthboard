@@ -23,6 +23,7 @@ import app.synthboard.core.Event
 import app.synthboard.core.Field
 import app.synthboard.core.Haptic
 import app.synthboard.core.Icon
+import app.synthboard.core.KEY_BYTES
 import java.io.File
 
 /**
@@ -149,7 +150,7 @@ class SynthboardService : InputMethodService() {
         val saved = preferences()
         haptics = saved.getBoolean(Settings.HAPTICS, true)
         view?.showTrail = saved.getBoolean(Settings.TRAIL, true)
-        send(Event.HeightScale(saved.getInt(Settings.HEIGHT, 100) / 100f))
+        send(Event.HeightScale(saved.getInt(Settings.HEIGHT, Settings.FULL_HEIGHT) / Settings.FULL_HEIGHT.toFloat()))
         val erasures = saved.getInt(Settings.ERASURES, 0)
         if (erasures != seenErasures) {
             seenErasures = erasures
@@ -227,7 +228,7 @@ class SynthboardService : InputMethodService() {
             val before = if (readable) textBeforeCursor() else ""
             val after = if (readable) textAfterCursor() else ""
             send(Event.Shown(field, before, after, info.initialSelEnd.coerceAtLeast(0).toUInt()))
-            send(Event.Session((System.currentTimeMillis() / 1000).toULong()))
+            send(Event.Session((System.currentTimeMillis() / MILLIS_PER_SECOND).toULong()))
             loadMemory()
         }
     }
@@ -344,6 +345,6 @@ class SynthboardService : InputMethodService() {
     private companion object {
         /** What the keyboard reads around the cursor: little, as it cannot be wiped from the JVM. */
         const val CONTEXT_CHARS = 256
-        const val KEY_BYTES = 32
+        const val MILLIS_PER_SECOND = 1000
     }
 }

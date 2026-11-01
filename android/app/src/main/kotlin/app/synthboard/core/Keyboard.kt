@@ -14,6 +14,9 @@ private object Native {
     external fun call(input: Long, size: Int, output: Long, capacity: Int): Int
 
     @JvmStatic
+    external fun preview(output: Long, capacity: Int): Int
+
+    @JvmStatic
     external fun take(output: Long)
 }
 
@@ -39,6 +42,10 @@ class Keyboard {
 
     private val buffers = ThreadLocal.withInitial(::Buffers)
 
+    /** Only the preview thread uses these. */
+    private val previewOutput by lazy { directBuffer(PREVIEW_BYTES) }
+    private val previewAddress by lazy { Native.address(previewOutput) }
+
     private fun send(call: Call): Reply {
         val set = buffers.get()
         val writer = set.writer
@@ -60,7 +67,15 @@ class Keyboard {
 
     fun setTraceKey(hex: String) = done(Call.SetTraceKey(hex))
 
-    fun preview(): String = (send(Call.Preview) as Reply.Text).text
+    fun preview(): String {
+        val size = Native.preview(previewAddress, PREVIEW_BYTES)
+        if (size == 0) return ""
+        val bytes = ByteArray(size)
+        previewOutput.clear()
+        previewOutput.get(bytes)
+        previewOutput.wipe(size)
+        return String(bytes, Charsets.UTF_8).also { bytes.fill(0) }
+    }
 
     fun loadLanguage(affinities: ByteArray, forms: ByteArray, nextWords: ByteArray) =
         done(Call.LoadLanguage(affinities, forms, nextWords))
@@ -80,5 +95,6 @@ class Keyboard {
 
     private companion object {
         const val OUTPUT_BYTES = 8 * 1024
+        const val PREVIEW_BYTES = 256
     }
 }

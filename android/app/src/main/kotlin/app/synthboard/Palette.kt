@@ -14,6 +14,13 @@ class Palette(context: Context) {
     val key = pick(android.R.color.system_neutral2_800, android.R.color.system_neutral1_0)
     val function = pick(android.R.color.system_neutral2_700, android.R.color.system_neutral2_200)
     val pressed = pick(android.R.color.system_accent1_600, android.R.color.system_accent1_200)
-    val accent = pick(android.R.color.system_accent1_300, android.R.color.system_accent1_600)
+
+    /** The petrol of Synthèse, softer at night where the deep one would sink. */
+    val accent = if (dark) PETROL_SOFT else PETROL
     val text = pick(android.R.color.system_neutral1_50, android.R.color.system_neutral1_900)
+
+    private companion object {
+        const val PETROL = 0xFF0E5E68.toInt()
+        const val PETROL_SOFT = 0xFF4E8A92.toInt()
+    }
 }

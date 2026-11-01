@@ -8,6 +8,8 @@ use std::cell::RefCell;
 use std::ffi::c_void;
 use std::sync::OnceLock;
 
+use zeroize::Zeroize;
+
 use crate::{Keyboard, handle};
 
 type Env = *const *const *const c_void;
@@ -27,6 +29,11 @@ fn finish(reply: &mut Vec<u8>) {
     if reply.capacity() > KEPT_BYTES {
         *reply = Vec::new();
     }
+}
+
+fn keyboard() -> &'static Keyboard {
+    static KEYBOARD: OnceLock<Keyboard> = OnceLock::new();
+    KEYBOARD.get_or_init(Keyboard::new)
 }
 
 /// A reply larger than this was the emoji catalogue, which comes once.
@@ -60,11 +67,10 @@ pub unsafe extern "system" fn Java_app_synthboard_core_Native_call(
     output: i64,
     capacity: i32,
 ) -> i32 {
-    static KEYBOARD: OnceLock<Keyboard> = OnceLock::new();
     // SAFETY: Kotlin keeps this buffer alive, and leaves it alone, during the call.
     let bytes = unsafe { std::slice::from_raw_parts_mut(input as *mut u8, usize::try_from(size).unwrap_or(0)) };
     REPLY.with_borrow_mut(|reply| {
-        handle(KEYBOARD.get_or_init(Keyboard::new), bytes, reply);
+        handle(keyboard(), bytes, reply);
         bytes.fill(0);
         let length = i32::try_from(reply.len()).unwrap_or(i32::MAX);
         if length <= capacity {
@@ -74,6 +80,30 @@ pub unsafe extern "system" fn Java_app_synthboard_core_Native_call(
         }
         length
     })
+}
+
+/// The word the gesture under way would give, at `output`. It runs for every
+/// frame of a gesture, so it skips messages altogether. Returns its length, or
+/// 0 if there is none or it does not fit.
+///
+/// # Safety
+/// Only Kotlin calls this, with a live buffer it owns, of this size.
+#[unsafe(no_mangle)]
+pub unsafe extern "system" fn Java_app_synthboard_core_Native_preview(
+    _env: Env,
+    _class: Object,
+    output: i64,
+    capacity: i32,
+) -> i32 {
+    let mut word = keyboard().preview();
+    let length = i32::try_from(word.len()).unwrap_or(i32::MAX);
+    let fits = length <= capacity;
+    if fits {
+        // SAFETY: the word fits in the output buffer.
+        unsafe { std::ptr::copy_nonoverlapping(word.as_ptr(), output as *mut u8, word.len()) };
+    }
+    word.zeroize();
+    if fits { length } else { 0 }
 }
 
 /// Hands over a reply that did not fit.

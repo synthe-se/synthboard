@@ -190,7 +190,7 @@ class EmojiGrid(
         val item = cellAt(x, y) ?: return
         if (item.tones.isEmpty()) return
         tonePopup = listOf(item.emoji) + item.tones
-        toneAnchorY = (y - cell * 1.5f).coerceAtLeast(bar)
+        toneAnchorY = (y - cell * TONE_LIFT_CELLS).coerceAtLeast(bar)
         toneX = (x - cell).coerceIn(0f, (width - cell * tonePopup.size).coerceAtLeast(0f))
         toneSelected = (tone).coerceIn(0, tonePopup.lastIndex)
         invalidate()
@@ -240,7 +240,7 @@ class EmojiGrid(
             val rowHeight = if (row is Header) header else cell
             if (top + rowHeight < bar || top > gridBottom()) return@forEachIndexed
             when (row) {
-                is Header -> canvas.drawText(row.title, cell / 4, top + header * 0.72f, labelPaint)
+                is Header -> canvas.drawText(row.title, cell / 4, top + header * HEADER_BASELINE, labelPaint)
                 is Cells -> row.items.forEachIndexed { column, item ->
                     canvas.drawText(shown(item), cell * column + cell / 2, top + baseline, emojiPaint)
                 }
@@ -273,14 +273,14 @@ class EmojiGrid(
         if (tonePopup.isEmpty()) return
         rect.set(toneX, toneAnchorY, toneX + cell * tonePopup.size, toneAnchorY + cell)
         fill.color = palette().key
-        canvas.drawRoundRect(rect, 8 * density, 8 * density, fill)
+        canvas.drawRoundRect(rect, KEY_RADIUS_DP * density, KEY_RADIUS_DP * density, fill)
         val baseline = toneAnchorY + cell / 2 - (emojiPaint.descent() + emojiPaint.ascent()) / 2
         tonePopup.forEachIndexed { index, emoji ->
             val left = toneX + cell * index
             if (index == toneSelected) {
                 rect.set(left, toneAnchorY, left + cell, toneAnchorY + cell)
                 fill.color = palette().pressed
-                canvas.drawRoundRect(rect, 8 * density, 8 * density, fill)
+                canvas.drawRoundRect(rect, KEY_RADIUS_DP * density, KEY_RADIUS_DP * density, fill)
             }
             canvas.drawText(emoji, left + cell / 2, baseline, emojiPaint)
         }
@@ -288,6 +288,12 @@ class EmojiGrid(
 
     private companion object {
         const val SKIN_TONES = 5
+
+        /** How far above the finger the skin tones open, in cells. */
+        const val TONE_LIFT_CELLS = 1.5f
+
+        /** Where a group title sits in its header row. */
+        const val HEADER_BASELINE = 0.72f
         const val CELL_DP = 48f
         const val HEADER_DP = 28f
         const val STRIP_DP = 44f

@@ -55,6 +55,12 @@ pub struct Params {
     pub hook_penalty: f32,
 }
 
+/// Precision of a location weight, kept in integers so that it needs no cast from a count.
+const RATIO_STEPS: usize = 1000;
+/// A final turn closer to the end than this, in key pitches, is finger noise.
+const MIN_HOOK_KEYS: f32 = 0.15;
+
+/// Defaults tuned with `synthswipe-bench --tune`, then on the owner's traces.
 impl Default for Params {
     fn default() -> Self {
         Self {
@@ -115,7 +121,7 @@ fn location_weight(index: usize, count: usize) -> f32 {
     let center = count.saturating_sub(1) / 2;
     let offset = index.abs_diff(center);
     let span = center.max(1);
-    let ratio = u16::try_from(offset * 1000 / span).map_or(1.0, |value| f32::from(value) / 1000.0);
+    let ratio = u16::try_from(offset * RATIO_STEPS / span).map_or(1.0, |value| f32::from(value) / f32::from(RATIO_STEPS as u16));
     0.5 + ratio
 }
 
@@ -356,7 +362,7 @@ fn without_end_hook(path: &[Point], pitch: f32) -> Option<Vec<Point>> {
         if tail > reach {
             break;
         }
-        if tail < 0.15 * pitch {
+        if tail < MIN_HOOK_KEYS * pitch {
             continue;
         }
         let approach = path
