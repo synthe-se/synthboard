@@ -41,8 +41,8 @@ pub enum Command {
     EmojiSearch { on: bool, query: String, results: Vec<String> },
     /// Names a key for touch exploration.
     Announce { text: String, icon: Icon },
-    /// Appends a line to the local gesture trace, in debug builds only.
-    Trace { line: String },
+    /// Appends a sealed record to the trace, as hex.
+    Trace { record: String },
     /// Stores what the keyboard learned, for the next start.
     SaveMemory { text: String },
     /// Stores the recent emoji for the next start.

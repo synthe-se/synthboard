@@ -14,6 +14,7 @@ import android.os.UserManager
 import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
 import android.view.View
+import android.view.WindowManager
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import app.synthboard.core.Command
@@ -31,6 +32,7 @@ import java.io.File
  */
 class SynthboardService : InputMethodService() {
     private val keyboard = Core.keyboard
+    private val vault = Vault.ofDevice()
     private val handler = Handler(Looper.getMainLooper())
     private val deadline = Runnable { send(Event.Deadline(SystemClock.uptimeMillis().toULong())) }
     private var previewRunning = false
@@ -65,11 +67,11 @@ class SynthboardService : InputMethodService() {
     private fun preferences(): SharedPreferences? =
         if (isUnlocked()) getSharedPreferences(Settings.FILE, MODE_PRIVATE) else null
 
-    private fun memoryFile(): File? = if (isUnlocked()) File(filesDir, MEMORY_FILE) else null
+    private fun memoryFile(): File? = if (isUnlocked()) File(filesDir, Settings.MEMORY_FILE) else null
 
-    /** The local gesture trace, which only exists while recording is on. */
+    /** The sealed trace. It only exists in a build holding an owner's key. */
     private fun traceFile(): File? = preferences()
-        ?.takeIf { it.getBoolean(Settings.TRACES, resources.getBoolean(R.bool.traces_by_default)) }
+        ?.takeIf { Settings.hasTraceKey(this) && it.getBoolean(Settings.TRACES, true) }
         ?.let { File(filesDir, TraceProvider.FILE) }
 
     private fun readAsset(name: String): ByteArray = assets.open(name).use { it.readBytes() }
@@ -78,6 +80,7 @@ class SynthboardService : InputMethodService() {
     private fun loadLanguageData() {
         if (Core.loading.getAndSet(true)) return
         Core.onIo {
+            Settings.traceKey(this)?.let(keyboard::setTraceKey)
             keyboard.loadLexicon(readAsset("lexicon.csv"))
             keyboard.loadLanguage(readAsset("affinity.bin"), readAsset("forms.tsv"), readAsset("next.tsv"))
             handler.post { send(Event.LanguageReady) }
@@ -91,11 +94,11 @@ class SynthboardService : InputMethodService() {
         seenErasures = saved.getInt(Settings.ERASURES, 0)
         val recents = saved.getString(Settings.RECENTS, "").orEmpty().split(' ').filter(String::isNotEmpty)
         send(Event.Recents(recents))
-        if (traceFile() != null) send(Event.EnableTraces)
         Core.onIo {
-            val text = memoryFile()?.takeIf(File::exists)?.readText()
+            val text = readMemory()
             handler.post { text?.let { send(Event.Memory(it)) } }
         }
+        Core.onIo { sealLegacyTraces() }
     }
 
     /** Loads the emoji the first time the panel opens: most sessions never do. */
@@ -150,19 +153,42 @@ class SynthboardService : InputMethodService() {
         }
     }
 
-    private fun saveMemory(text: String) {
-        val target = memoryFile() ?: return
-        val temporary = File(filesDir, "$MEMORY_FILE.tmp")
-        Core.onIo {
-            temporary.writeText(text)
-            temporary.renameTo(target)
-        }
+    /** Reads the sealed memory, and seals one left in the clear by an older version. */
+    private fun readMemory(): String? {
+        val sealed = memoryFile() ?: return null
+        val plain = File(filesDir, Settings.LEGACY_MEMORY_FILE)
+        if (!plain.exists()) return sealed.takeIf(File::exists)?.let { vault.open(it.readBytes()) }
+        val text = plain.readText()
+        writeMemory(sealed, text)
+        plain.delete()
+        return text
     }
 
-    private fun appendTrace(line: String) {
+    /** Seals traces left in the clear by an older version, then removes them. */
+    private fun sealLegacyTraces() {
+        val plain = File(filesDir, Settings.LEGACY_TRACE_FILE)
+        val target = traceFile()
+        if (!plain.exists() || target == null) return
+        val records = plain.readLines().map { keyboard.sealLine(it) ?: return }
+        target.appendText(records.joinToString("") { it + "\n" })
+        plain.delete()
+    }
+
+    private fun writeMemory(target: File, text: String) {
+        val temporary = File(filesDir, "${target.name}.tmp")
+        temporary.writeBytes(vault.seal(text))
+        temporary.renameTo(target)
+    }
+
+    private fun saveMemory(text: String) {
+        val target = memoryFile() ?: return
+        Core.onIo { writeMemory(target, text) }
+    }
+
+    private fun appendTrace(record: String) {
         val target = traceFile() ?: return
         Core.onIo {
-            if (target.length() < MAX_TRACE_BYTES) target.appendText(line + "\n")
+            if (target.length() < MAX_TRACE_BYTES) target.appendText(record + "\n")
         }
     }
 
@@ -202,10 +228,20 @@ class SynthboardService : InputMethodService() {
         super.onStartInputView(info, restarting)
         guarded {
             applySettings()
-            appendTrace("S\t${System.currentTimeMillis() / 1000}")
             val field = Field(info.inputType.toUInt(), info.imeOptions.toUInt())
-            send(Event.Shown(field, textBeforeCursor(), textAfterCursor(), info.initialSelEnd.coerceAtLeast(0).toUInt()))
+            val readable = keyboard.mayRead(field)
+            protectScreen(!readable)
+            val before = if (readable) textBeforeCursor() else ""
+            val after = if (readable) textAfterCursor() else ""
+            send(Event.Shown(field, before, after, info.initialSelEnd.coerceAtLeast(0).toUInt()))
+            send(Event.Session((System.currentTimeMillis() / 1000).toULong()))
         }
+    }
+
+    /** Keeps the keys of a password field out of screenshots and recordings. */
+    private fun protectScreen(on: Boolean) {
+        val flag = WindowManager.LayoutParams.FLAG_SECURE
+        window?.window?.run { if (on) addFlags(flag) else clearFlags(flag) }
     }
 
     override fun onFinishInputView(finishingInput: Boolean) {
@@ -267,7 +303,7 @@ class SynthboardService : InputMethodService() {
             }
             is Command.EmojiSearch -> view?.setSearch(command.on, command.query, command.results)
             is Command.SaveMemory -> saveMemory(command.text)
-            is Command.Trace -> appendTrace(command.line)
+            is Command.Trace -> appendTrace(command.record)
             is Command.SaveRecents ->
                 preferences()?.edit()?.putString(Settings.RECENTS, command.items.joinToString(" "))?.apply()
             is Command.Announce -> view?.announceForAccessibility(spoken(command))
@@ -307,7 +343,6 @@ class SynthboardService : InputMethodService() {
 
     private companion object {
         const val CONTEXT_CHARS = 2000
-        const val MEMORY_FILE = "memory.tsv"
         const val MAX_TRACE_BYTES = 64L * 1024 * 1024
     }
 }

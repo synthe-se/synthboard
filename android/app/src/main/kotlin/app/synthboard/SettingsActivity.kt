@@ -17,6 +17,7 @@ import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
 import java.io.File
+import java.io.IOException
 
 /** Keys shared by the settings screen and the keyboard. */
 object Settings {
@@ -28,6 +29,24 @@ object Settings {
     const val TONE = "tone"
     const val RECENTS = "recents"
     const val FILE = "emoji"
+    const val MEMORY_FILE = "memory.sealed"
+    const val LEGACY_MEMORY_FILE = "memory.tsv"
+    const val LEGACY_TRACE_FILE = "traces.tsv"
+    private const val TRACE_KEY_ASSET = "trace.pub"
+
+    /** The owner's public key, which only a personal build carries. */
+    fun traceKey(context: Context): String? = try {
+        context.assets.open(TRACE_KEY_ASSET).use { it.readBytes().decodeToString() }
+    } catch (_: IOException) {
+        null
+    }
+
+    fun hasTraceKey(context: Context): Boolean = traceKey(context) != null
+
+    /** Every file holding something the keyboard learned or recorded. */
+    fun personalFiles(context: Context): List<File> =
+        listOf(MEMORY_FILE, LEGACY_MEMORY_FILE, TraceProvider.FILE, LEGACY_TRACE_FILE)
+            .map { File(context.filesDir, it) }
 }
 
 /**
@@ -116,16 +135,19 @@ class SettingsActivity : Activity() {
             )
         }
         action(R.string.erase) { eraseEverything() }
-        heading(R.string.development)
-        toggle(R.string.record_traces, Settings.TRACES, resources.getBoolean(R.bool.traces_by_default))
-        action(R.string.send_traces) { sendTraces() }
+        if (Settings.hasTraceKey(this)) {
+            heading(R.string.development)
+            toggle(R.string.record_traces, Settings.TRACES)
+            action(R.string.send_traces) { sendTraces() }
+        }
     }
 
     /**
-     * Hands the trace to Tailscale and no other app. The keyboard has no network
-     * access of its own: the file only moves on this tap, over the user's tailnet.
+     * Hands the sealed trace to Tailscale and no other app. The keyboard has no
+     * network access of its own: the file only moves on this tap, and only the
+     * owner's secret key can open it.
      */
-    private fun sendTraces() {
+    internal fun sendTraces() {
         val uri = Uri.Builder().scheme("content").authority(TraceProvider.AUTHORITY).path(TraceProvider.FILE).build()
         val share = Intent(Intent.ACTION_SEND)
             .setPackage(TAILSCALE)
@@ -140,8 +162,7 @@ class SettingsActivity : Activity() {
     }
 
     private fun eraseEverything() {
-        File(filesDir, "memory.tsv").delete()
-        File(filesDir, TraceProvider.FILE).delete()
+        Settings.personalFiles(this).forEach(File::delete)
         store.edit()
             .remove(Settings.RECENTS)
             .putInt(Settings.ERASURES, store.getInt(Settings.ERASURES, 0) + 1)
@@ -153,16 +174,18 @@ class SettingsActivity : Activity() {
         super.onActivityResult(request, result, data)
         val target: Uri = data?.data ?: return
         if (request != EXPORT || result != RESULT_OK) return
-        val memory = File(filesDir, "memory.tsv")
-        contentResolver.openOutputStream(target)?.use { out ->
-            if (memory.exists()) out.write(memory.readBytes())
+        val memory = File(filesDir, Settings.MEMORY_FILE)
+        guarded {
+            contentResolver.openOutputStream(target)?.use { out ->
+                if (memory.exists()) out.write(Vault.ofDevice().open(memory.readBytes()).toByteArray())
+            }
         }
     }
 
-    private fun toggle(label: Int, key: String, default: Boolean = true) {
+    private fun toggle(label: Int, key: String) {
         list.addView(Switch(this).apply {
             setText(label)
-            isChecked = store.getBoolean(key, default)
+            isChecked = store.getBoolean(key, true)
             setOnCheckedChangeListener { _: View, on: Boolean -> store.edit().putBoolean(key, on).apply() }
         })
     }

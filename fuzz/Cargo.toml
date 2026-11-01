@@ -10,7 +10,15 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 synthboard-core = { path = "../crates/synthboard-core" }
+synthboard-seal = { path = "../crates/synthboard-seal" }
 synthswipe = { path = "../crates/synthswipe" }
+
+[[bin]]
+name = "fuzz_seal"
+path = "fuzz_targets/fuzz_seal.rs"
+test = false
+doc = false
+bench = false
 
 [[bin]]
 name = "fuzz_decoder"

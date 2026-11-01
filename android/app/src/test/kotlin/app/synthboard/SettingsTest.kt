@@ -21,6 +21,8 @@ import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import java.io.File
 import java.io.FileNotFoundException
+import java.security.GeneralSecurityException
+import javax.crypto.KeyGenerator
 
 /** Tests the screen and the file loan that hold the privacy promises. */
 @RunWith(AndroidJUnit4::class)
@@ -45,7 +47,7 @@ class SettingsTest {
     @Test
     fun traces_go_to_tailscale_and_to_nobody_else() {
         val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
-        press(activity, R.string.send_traces)
+        activity.sendTraces()
         val intent = shadowOf(activity).nextStartedActivity
         assertEquals(Intent.ACTION_SEND, intent.action)
         assertEquals("com.tailscale.ipn", intent.`package`)
@@ -55,12 +57,11 @@ class SettingsTest {
 
     @Test
     fun erasing_removes_memory_and_traces_and_tells_the_keyboard() {
-        File(context.filesDir, "memory.tsv").writeText("mot\t1\n")
-        File(context.filesDir, TraceProvider.FILE).writeText("G\ta\n")
+        val personal = Settings.personalFiles(context)
+        personal.forEach { it.writeText("x") }
         val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
         press(activity, R.string.erase)
-        assertFalse(File(context.filesDir, "memory.tsv").exists())
-        assertFalse(File(context.filesDir, TraceProvider.FILE).exists())
+        personal.forEach { assertFalse(it.name, it.exists()) }
         val store = context.getSharedPreferences(Settings.FILE, Context.MODE_PRIVATE)
         assertEquals(1, store.getInt(Settings.ERASURES, 0))
     }
@@ -87,6 +88,31 @@ class SettingsTest {
         cursor.moveToFirst()
         assertEquals(TraceProvider.FILE, cursor.getString(cursor.getColumnIndexOrThrow(OpenableColumns.DISPLAY_NAME)))
         assertEquals(5L, cursor.getLong(cursor.getColumnIndexOrThrow(OpenableColumns.SIZE)))
+    }
+
+    @Test
+    fun a_build_without_an_owner_key_offers_no_recording_at_all() {
+        val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
+        val labels = buttons(activity.window.decorView).map { it.text.toString() }
+        assertEquals(Settings.hasTraceKey(context), context.getString(R.string.send_traces) in labels)
+    }
+
+    @Test
+    fun memory_can_be_read_back_with_its_key_and_only_with_it() {
+        val generator = KeyGenerator.getInstance("AES").apply { init(256) }
+        val key = generator.generateKey()
+        val vault = Vault { key }
+        val sealed = vault.seal("mon mot prive")
+        assertEquals("mon mot prive", vault.open(sealed))
+        assertFalse(String(sealed, Charsets.ISO_8859_1).contains("prive"))
+        var refused = false
+        try {
+            val other = generator.generateKey()
+            Vault { other }.open(sealed)
+        } catch (_: GeneralSecurityException) {
+            refused = true
+        }
+        assertTrue(refused)
     }
 
     @Test

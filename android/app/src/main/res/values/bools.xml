@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- Gesture recording for this personal build. Must be false in any published build. -->
-    <bool name="traces_by_default">true</bool>
-</resources>

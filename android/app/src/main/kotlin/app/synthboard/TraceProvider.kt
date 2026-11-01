@@ -11,8 +11,8 @@ import java.io.File
 import java.io.FileNotFoundException
 
 /**
- * Lends the trace file to the one app the settings screen shares it with. It is
- * not exported, so nothing can read it without a grant made by a user's tap.
+ * Lends the sealed trace to the one app the settings screen shares it with. It
+ * is not exported, so nothing can read it without a grant made by a user's tap.
  */
 class TraceProvider : ContentProvider() {
     private fun traces(): File = File(requireNotNull(context).filesDir, FILE)
@@ -39,8 +39,8 @@ class TraceProvider : ContentProvider() {
     override fun delete(uri: Uri, where: String?, arguments: Array<String>?): Int = 0
 
     companion object {
-        const val FILE = "traces.tsv"
-        const val TYPE = "text/tab-separated-values"
+        const val FILE = "traces.sealed"
+        const val TYPE = "application/octet-stream"
         const val AUTHORITY = "app.synthboard.traces"
     }
 }

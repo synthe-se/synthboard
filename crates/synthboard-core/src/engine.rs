@@ -6,6 +6,7 @@ use std::sync::Arc;
 use boltffi::data;
 use synthswipe::{Affinities, Grammar, Layout, Lexicon, Params, signature, SENTENCE_START, Sample, correct, decode_in_context, tokens};
 use unicode_segmentation::UnicodeSegmentation;
+use zeroize::Zeroize;
 
 use crate::emoji::Catalog;
 use crate::memory::Memory;
@@ -155,9 +156,19 @@ impl Field {
         self.allows_gestures() && self.input_type & android::NO_SUGGESTIONS == 0
     }
 
+    /// Whether anything typed here may be remembered, in the learned words as
+    /// in the traces. Addresses hold no language worth learning.
     #[must_use]
     pub fn allows_learning(self) -> bool {
-        self.allows_suggestions() && self.ime_options & android::NO_PERSONALIZED_LEARNING == 0
+        self.allows_suggestions()
+            && !self.is_address()
+            && self.ime_options & android::NO_PERSONALIZED_LEARNING == 0
+    }
+
+    /// Whether the keyboard may read this field's text at all.
+    #[must_use]
+    pub fn allows_reading(self) -> bool {
+        !self.is_password()
     }
 }
 
@@ -198,8 +209,8 @@ pub enum Event {
     Memory { text: String },
     /// The language data finished loading, so the bar can fill.
     LanguageReady,
-    /// Starts recording gestures locally, for debug builds.
-    EnableTraces,
+    /// A keyboard session began, at this Unix time in seconds.
+    Session { unix: u64 },
     /// The emoji panel's search row was tapped.
     OpenEmojiSearch,
     /// The emoji panel was closed from inside.
@@ -282,7 +293,9 @@ pub struct Engine {
     lexicon: Option<Arc<Lexicon>>,
     affinities: Option<Arc<Affinities>>,
     grammar: Option<Arc<Grammar>>,
-    tracing: bool,
+    /// The owner's public key. Without one, no trace can exist.
+    trace_key: Option<[u8; 32]>,
+    layout_traced: bool,
     next_words: Option<Arc<NextWords>>,
     predictions: Vec<String>,
     /// The gesture of a word just deleted: the next word is what it meant.
@@ -498,7 +511,8 @@ impl Engine {
             lexicon: None,
             affinities: None,
             grammar: None,
-            tracing: false,
+            trace_key: None,
+            layout_traced: false,
             next_words: None,
             predictions: Vec::new(),
             failed_gesture: None,
@@ -554,6 +568,11 @@ impl Engine {
         self.next_words = Some(next_words);
     }
 
+    /// Allows traces, sealed for the owner of this public key.
+    pub fn set_trace_key(&mut self, key: [u8; 32]) {
+        self.trace_key = Some(key);
+    }
+
     /// Provides the emoji catalogue.
     pub fn set_catalog(&mut self, catalog: Arc<Catalog>) {
         self.catalog = Some(catalog);
@@ -569,6 +588,7 @@ impl Engine {
     pub fn step(&mut self, event: Event) -> Step {
         match event {
             Event::Resize { width, screen_height, density } => {
+                self.layout_traced = false;
                 self.width = width;
                 self.screen_height = screen_height;
                 self.density = density;
@@ -589,7 +609,7 @@ impl Engine {
                 self.clear_suggestions();
             }
             Event::Shown { field, before, after, cursor } => {
-                self.after = after;
+                self.after = if field.allows_reading() { after } else { String::new() };
                 self.shown(field, before, cursor);
             }
             Event::Hidden => self.hidden(),
@@ -608,17 +628,16 @@ impl Engine {
             Event::Deadline { t } => self.deadline_passed(t),
             Event::Selection { start, end } => self.selection_changed(start, end),
             Event::Context { before, after } => {
-                self.before = before;
-                self.after = after;
+                if self.field.allows_reading() {
+                    self.before = before;
+                    self.after = after;
+                }
                 self.refresh_shift();
             }
             Event::Text { text } => self.pick(&text),
             Event::DeleteOne => self.delete_one(),
             Event::Recents { items } => self.recents = items,
-            Event::EnableTraces => {
-                self.tracing = true;
-                self.trace_layout();
-            }
+            Event::Session { unix } => self.trace(format!("S\t{unix}")),
             Event::LanguageReady => {
                 if self.typing.is_none() && self.last_word.is_none() {
                     self.clear_suggestions();
@@ -690,14 +709,11 @@ impl Engine {
     fn shown(&mut self, field: Field, before: String, cursor: u32) {
         self.field = field;
         self.leaning = LANGUAGE_START;
-        self.before = before;
+        self.before = if field.allows_reading() { before } else { String::new() };
         self.cursor = cursor;
         self.selection = (cursor, cursor);
         self.expected_selection = None;
-        self.spacing = Spacing::None;
-        self.last_word = None;
-        self.typing = None;
-        self.corrected = None;
+        self.end_word();
         self.layer = field.base_layer();
         self.touch = Touch::Idle;
         self.pointer = None;
@@ -712,11 +728,34 @@ impl Engine {
         self.finish_typing_literal();
         self.confirm_pending();
         self.save_memory();
+        self.forget_text();
         if self.search.take().is_some() {
             self.out.push(Command::EmojiSearch { on: false, query: String::new(), results: Vec::new() });
         }
         self.out.push(Command::EmojiPanel { on: false, recents: Vec::new() });
+    }
+
+    /// Forgets the word in progress and any space owed after it.
+    fn end_word(&mut self) {
         self.spacing = Spacing::None;
+        self.last_word = None;
+        self.typing = None;
+        self.corrected = None;
+    }
+
+    /// Wipes everything this session read or typed, once the keyboard is closed.
+    fn forget_text(&mut self) {
+        self.before.zeroize();
+        self.after.zeroize();
+        self.protected.zeroize();
+        if let Some(query) = self.search.as_mut() {
+            query.zeroize();
+        }
+        self.search = None;
+        self.predictions.clear();
+        self.corrected = None;
+        self.failed_gesture = None;
+        self.typing = None;
         self.last_word = None;
     }
 
@@ -1002,8 +1041,7 @@ impl Engine {
                     self.touch = Touch::Cursor { anchor: down.0 };
                     self.deadline = None;
                     self.press(-1);
-                    self.spacing = Spacing::None;
-                    self.last_word = None;
+                    self.end_word();
                 }
             }
             Some(Action::Delete) => {
@@ -1229,10 +1267,7 @@ impl Engine {
             Action::Delete => self.delete_tap(),
             Action::Enter if self.search.is_some() => self.close_search(),
             Action::Enter => {
-                self.typing = None;
-                self.corrected = None;
-                self.spacing = Spacing::None;
-                self.last_word = None;
+                self.end_word();
                 self.clear_suggestions();
                 self.out.push(Command::Enter);
             }
@@ -1386,10 +1421,22 @@ impl Engine {
         words
     }
 
-    fn trace(&mut self, line: String) {
-        if self.tracing {
-            self.out.push(Command::Trace { line });
+    /// Records a line, sealed before it leaves the engine, so that plain text
+    /// never reaches the Android side. A field that forbids learning records nothing.
+    fn trace(&mut self, mut line: String) {
+        if self.field.allows_learning()
+            && let Some(record) = self.sealed(&line)
+        {
+            self.out.push(Command::Trace { record });
         }
+        line.zeroize();
+    }
+
+    /// Seals a line for the owner, if this build has an owner's key.
+    #[must_use]
+    pub fn sealed(&self, line: &str) -> Option<String> {
+        let record = synthboard_seal::seal(&self.trace_key?, line.as_bytes()).ok()?;
+        Some(synthboard_seal::to_hex(&record))
     }
 
     fn trace_layout(&mut self) {
@@ -1397,6 +1444,7 @@ impl Engine {
             let (x, y) = key.center();
             format!("{}:{x:.0}:{y:.0}:{:.0}:{:.0}", key.label, key.width, key.height)
         }).collect();
+        self.layout_traced = true;
         self.trace(format!("K\t{}", keys.join(" ")));
     }
 
@@ -1527,7 +1575,9 @@ impl Engine {
 
     fn insert_text(&mut self, text: &str) {
         self.out.push(Command::Commit { text: text.to_owned() });
-        self.before.push_str(text);
+        if self.field.allows_reading() {
+            self.before.push_str(text);
+        }
         self.cursor += utf16_len(text);
         self.expected_selection = Some(self.cursor);
     }
@@ -1609,10 +1659,7 @@ impl Engine {
 
     /// Removes the word before the cursor, with the spaces after it.
     fn delete_word(&mut self) {
-        self.spacing = Spacing::None;
-        self.last_word = None;
-        self.typing = None;
-        self.corrected = None;
+        self.end_word();
         let units = self.word_boundaries(1);
         if units > 0 {
             self.delete_units(units);
@@ -1693,12 +1740,9 @@ impl Engine {
         if self.expected_selection == Some(end) && start == end {
             return;
         }
-        self.typing = None;
-        self.corrected = None;
+        self.end_word();
         self.cursor = end;
         self.expected_selection = None;
-        self.spacing = Spacing::None;
-        self.last_word = None;
         self.clear_suggestions();
         self.out.push(Command::RequestContext);
     }
@@ -1738,6 +1782,9 @@ impl Engine {
         let Some(first) = words.first().cloned() else {
             return;
         };
+        if !self.layout_traced {
+            self.trace_layout();
+        }
         let points: Vec<String> = path.iter().map(|p| format!("{:.0},{:.0},{}", p.x, p.y, p.t_ms)).collect();
         self.trace(format!("G\t{first}\t{}\t{}\t{}", words.join(","), points.join(" "), self.history("").join(" ")));
         if self.search_input(&first) {
@@ -2309,14 +2356,80 @@ mod tests {
         assert!(rig.engine.preview_job().is_none());
     }
 
+    fn traces(step: &Step) -> Vec<&str> {
+        step.commands
+            .iter()
+            .filter_map(|c| match c {
+                Command::Trace { record } => Some(record.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn opened(secret: &[u8; 32], record: &str) -> String {
+        let bytes = synthboard_seal::from_hex(record).unwrap();
+        String::from_utf8(synthboard_seal::open(secret, &bytes).unwrap()).unwrap()
+    }
+
+    fn traced_rig(field: Field) -> (Rig, [u8; 32]) {
+        let (secret, public) = synthboard_seal::generate_keys().unwrap();
+        let mut rig = Rig::new(field);
+        rig.engine.set_trace_key(public);
+        (rig, secret)
+    }
+
     #[test]
-    fn traces_stay_off_unless_enabled_and_record_corrections() {
+    fn without_a_key_no_trace_can_exist() {
         let mut rig = Rig::new(TEXT_FIELD);
-        let quiet = rig.engine.step(Event::Down { pointer: 0, x: 10.0, y: 200.0, t: 1 });
-        assert!(!quiet.commands.iter().any(|c| matches!(c, Command::Trace { .. })));
-        rig.send(Event::Cancel);
-        let step = rig.send(Event::EnableTraces);
-        assert!(step.commands.iter().any(|c| matches!(c, Command::Trace { line } if line.starts_with('K'))));
+        let step = rig.send(Event::Session { unix: 1 });
+        assert_eq!(traces(&step), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn traces_are_sealed_before_they_leave_the_engine() {
+        let (mut rig, secret) = traced_rig(TEXT_FIELD);
+        let step = rig.send(Event::Session { unix: 42 });
+        let record = traces(&step)[0];
+        assert!(!record.contains("S\t42"));
+        assert_eq!(opened(&secret, record), "S\t42");
+    }
+
+    #[test]
+    fn a_field_that_forbids_learning_records_nothing() {
+        let private = Field { input_type: android::CLASS_TEXT, ime_options: android::NO_PERSONALIZED_LEARNING };
+        let (mut rig, _) = traced_rig(private);
+        let step = rig.send(Event::Session { unix: 1 });
+        assert_eq!(traces(&step), Vec::<&str>::new());
+    }
+
+    #[test]
+    fn addresses_are_neither_learned_nor_traced() {
+        let field = Field { input_type: android::CLASS_TEXT | android::URI, ime_options: 0 };
+        assert!(!field.allows_learning());
+    }
+
+    #[test]
+    fn a_password_never_enters_the_mirror() {
+        let password = Field { input_type: android::CLASS_TEXT | android::PASSWORD, ime_options: 0 };
+        let mut rig = Rig::new(password);
+        rig.send(Event::Shown { field: password, before: "secret".to_owned(), after: "deux".to_owned(), cursor: 6 });
+        rig.tap("a");
+        rig.send(Event::Context { before: "secret".to_owned(), after: "deux".to_owned() });
+        assert_eq!(rig.engine.before, "");
+        assert_eq!(rig.engine.after, "");
+        assert!(!password.allows_reading());
+    }
+
+    #[test]
+    fn closing_the_keyboard_wipes_what_it_read() {
+        let mut rig = rig_with_text("mon message prive");
+        rig.send(Event::OpenEmojiSearch);
+        rig.tap("a");
+        rig.send(Event::Hidden);
+        assert_eq!(rig.engine.before, "");
+        assert_eq!(rig.engine.after, "");
+        assert!(rig.engine.search.is_none());
+        assert_eq!(rig.engine.protected, Vec::<String>::new());
     }
 
     #[test]
@@ -2400,7 +2513,8 @@ mod tests {
     #[test]
     fn the_trace_names_the_word_a_deleted_gesture_meant() {
         let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
-        rig.send(Event::EnableTraces);
+        let (secret, public) = synthboard_seal::generate_keys().unwrap();
+        rig.engine.set_trace_key(public);
         rig.swipe("bonjour");
         rig.tap("⌫");
         type_word(&mut rig, "zxcv");
@@ -2408,7 +2522,7 @@ mod tests {
         let t = rig.t + 700;
         rig.send(Event::Down { pointer: 0, x, y, t });
         let step = rig.send(Event::Up { pointer: 0, x, y, t: t + 30 });
-        assert!(step.commands.iter().any(|c| matches!(c, Command::Trace { line } if line == "F\tzxcv")));
+        assert!(traces(&step).iter().any(|record| opened(&secret, record) == "F\tzxcv"));
     }
 
     #[test]

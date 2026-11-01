@@ -2,10 +2,10 @@
 //! it only stops panics at the boundary, which BoltFFI does not do by itself.
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, Once, PoisonError};
 
 use boltffi::export;
-use synthboard_core::{Catalog, EmojiGroup, Engine, Event, NextWords, Step};
+use synthboard_core::{Catalog, EmojiGroup, Engine, Event, Field, NextWords, Step};
 use synthswipe::{Affinities, Grammar, Lexicon};
 
 boltffi::scaffolding!();
@@ -14,6 +14,12 @@ boltffi::scaffolding!();
 #[export]
 pub struct Keyboard {
     engine: Mutex<Engine>,
+}
+
+/// A panic message could quote what was typed, so none is ever printed.
+fn silence_panics() {
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| std::panic::set_hook(Box::new(|_| {})));
 }
 
 /// Runs `work`, turning a panic into the empty result so that the keyboard
@@ -35,6 +41,7 @@ fn parse_lexicon(bytes: &[u8]) -> Lexicon {
 impl Keyboard {
     #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
+        silence_panics();
         Self { engine: Mutex::new(Engine::new()) }
     }
 
@@ -51,6 +58,24 @@ impl Keyboard {
             }
         }
         step
+    }
+
+    /// Whether the shell may read this field's text.
+    pub fn may_read(&self, field: Field) -> bool {
+        field.allows_reading()
+    }
+
+    /// Allows traces, sealed for the owner of this public key, given as hex.
+    /// Anything but a valid key leaves traces off.
+    pub fn set_trace_key(&self, hex: String) {
+        if let Some(key) = synthboard_seal::from_hex(hex.trim()).and_then(|bytes| bytes.try_into().ok()) {
+            self.lock().set_trace_key(key);
+        }
+    }
+
+    /// Seals a line left in the clear by an older version, or nothing without a key.
+    pub fn seal_line(&self, line: String) -> Option<String> {
+        self.lock().sealed(&line)
     }
 
     /// The word the gesture under way would give, or nothing. The engine is
