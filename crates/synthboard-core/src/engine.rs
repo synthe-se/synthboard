@@ -130,6 +130,9 @@ pub const NEXT_WORD_MARGIN: f32 = 1.5;
 /// once, even drawn too loosely to match its trace: the owner corrected one word
 /// three times in a row without it coming first.
 const FRESH_CHOICES: usize = 8;
+/// Swiped words kept with their gesture for a correction made with the cursor: the
+/// end of a sentence, as `UNLEARNABLE_WORDS` is for a rephrasing.
+const RECENT_SWIPES: usize = 8;
 /// Words kept ready to be taken back from memory if they are erased: a sentence
 /// rephrased rarely goes further back than this.
 const UNLEARNABLE_WORDS: usize = 6;
@@ -386,6 +389,27 @@ impl Learned {
     }
 }
 
+/// A word written by a gesture and what stands around it, to recognise it being
+/// replaced with the cursor. Neighbours rather than offsets, which an edit moves.
+#[derive(Debug, Clone)]
+struct RecentSwipe {
+    word: String,
+    previous: String,
+    history: Vec<String>,
+    next: Option<String>,
+    gesture: Vec<Sample>,
+}
+
+impl RecentSwipe {
+    fn wipe(&mut self) {
+        self.word.zeroize();
+        self.previous.zeroize();
+        self.history.zeroize();
+        self.next.zeroize();
+        self.gesture.fill(BLANK_SAMPLE);
+    }
+}
+
 /// How much of the saved memory is in RAM, which it leaves whenever the keyboard
 /// hides. Only a full copy is ever saved, or the file would lose the rest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -503,6 +527,9 @@ pub struct Engine {
     neural_decides: bool,
     autocorrect: bool,
     fresh: Vec<(String, Vec<[f32; 2]>)>,
+    recent_swipes: Vec<RecentSwipe>,
+    /// The cursor moved since the last gesture, so a word may be replaced in mid-text.
+    cursor_moved: bool,
     learned: Vec<Learned>,
     /// The text changed behind the keyboard, and `learned` waits to be checked against it.
     unsettled: bool,
@@ -951,6 +978,8 @@ impl Engine {
             autocorrect: true,
             fresh: Vec::new(),
             learned: Vec::new(),
+            recent_swipes: Vec::new(),
+            cursor_moved: false,
             unsettled: false,
             unsaved: None,
             word_shift: Shift::default(),
@@ -1211,6 +1240,7 @@ impl Engine {
         self.retry = None;
         self.failed_gesture = None;
         self.field = field;
+        self.wipe_recent_swipes();
         self.wipe_learned();
         self.unsettled = false;
         self.out.push(Command::ProtectScreen { on: !self.screenshots || !field.allows_reading() });
@@ -1341,6 +1371,7 @@ impl Engine {
     }
 
     fn wipe_fresh(&mut self) {
+        self.wipe_recent_swipes();
         for (word, shape) in &mut self.fresh {
             word.zeroize();
             shape.fill([0.0; 2]);
@@ -1449,6 +1480,15 @@ impl Engine {
         self.memory_changed = true;
         let mut taught: Vec<Vec<[f32; 2]>> =
             kept.taught.into_iter().filter(|(chosen, _)| *chosen == word).map(|(_, shape)| shape).collect();
+        if let Some(last) = self.recent_swipes.last_mut().filter(|swipe| swipe.word == kept.previous && swipe.next.is_none()) {
+            last.next = Some(word.clone());
+        }
+        if self.cursor_moved
+            && kept.failed_gesture.is_none()
+            && let Some(replaced) = self.take_replaced_swipe(&kept.previous, &word)
+        {
+            taught.extend(self.apply_replacement(replaced, &kept.written));
+        }
         if let Some(failed) = kept.failed_gesture {
             if self.gesture_fits(&kept.written, &failed) {
                 self.trace(format!("F\t{}", kept.written));
@@ -1502,6 +1542,9 @@ impl Engine {
         self.trace(format!("R\t{old}\t{new}"));
         self.delete_units(utf16_len(&old));
         self.insert_text(&new);
+        if let Some(swipe) = self.recent_swipes.last_mut() {
+            swipe.word = new.to_lowercase();
+        }
         self.relearn(&new);
         Some(Revision { old, new })
     }
@@ -1536,6 +1579,69 @@ impl Engine {
             pending.leaning_before = leaning_before;
         }
         true
+    }
+
+    /// The swiped word that `word`, just confirmed after `previous`, took the place of.
+    /// Its neighbours must both match, and only one word may: in doubt, nothing is taught.
+    fn take_replaced_swipe(&mut self, previous: &str, word: &str) -> Option<RecentSwipe> {
+        let next = tokens(&self.after).into_iter().next();
+        let fits = |swipe: &RecentSwipe| swipe.previous == previous && swipe.word != word && swipe.next == next;
+        let mut found = self.recent_swipes.iter().enumerate().filter(|(_, swipe)| fits(swipe)).map(|(index, _)| index);
+        let index = found.next().filter(|_| found.next().is_none())?;
+        Some(self.recent_swipes.remove(index))
+    }
+
+    /// Treats a word replaced with the cursor as the correction of its gesture, or as a
+    /// change of mind if the gesture cannot mean the new word. Memory forgets the old word.
+    fn apply_replacement(&mut self, mut replaced: RecentSwipe, written: &str) -> Option<Vec<[f32; 2]>> {
+        self.cursor_moved = false;
+        let known = self.known();
+        let new = written.to_lowercase();
+        let memory = Arc::make_mut(&mut self.memory);
+        memory.unlearn(&replaced.history, &replaced.previous, &replaced.word, &known);
+        if let Some(next) = &replaced.next {
+            memory.move_pair(&replaced.word, &new, next);
+        }
+        self.memory_changed = true;
+        let taught = if self.gesture_fits(written, &replaced.gesture) {
+            self.trace(format!("F\t{written}\t{}", replaced.word));
+            self.teach(written, &replaced.gesture)
+        } else {
+            self.trace(format!("M\t{}", replaced.word));
+            None
+        };
+        replaced.wipe();
+        taught
+    }
+
+    fn wipe_recent_swipes(&mut self) {
+        for swipe in &mut self.recent_swipes {
+            swipe.wipe();
+        }
+        self.recent_swipes.clear();
+    }
+
+    /// Remembers a word just written by a gesture.
+    fn note_swipe(&mut self, gesture: &[Sample]) {
+        self.cursor_moved = false;
+        let Some(pending) = self.pending.as_ref().filter(|_| self.field.allows_learning()) else {
+            return;
+        };
+        let (written, previous) = (pending.written.to_lowercase(), pending.previous.clone());
+        let swipe = RecentSwipe {
+            word: pending.written.to_lowercase(),
+            previous: pending.previous.clone(),
+            history: pending.history.clone(),
+            next: None,
+            gesture: gesture.to_vec(),
+        };
+        if let Some(last) = self.recent_swipes.last_mut().filter(|swipe| swipe.word == previous) {
+            last.next = Some(written);
+        }
+        if self.recent_swipes.len() >= RECENT_SWIPES {
+            self.recent_swipes.remove(0).wipe();
+        }
+        self.recent_swipes.push(swipe);
     }
 
     /// Files a gesture as the user's own trace for the word it really meant, and
@@ -2587,11 +2693,14 @@ impl Engine {
         let mut text = tokens(&self.before);
         text.extend(tokens(&self.after));
         self.take_back_missing(&text);
-        self.wipe_learned();
         let pending_left = self.pending.as_ref().is_some_and(|pending| token_position(&text, text.len(), &pending.written).is_none());
         if pending_left {
             self.drop_pending();
+        } else {
+            // It stayed: backspace elsewhere must not cost it its learning.
+            self.confirm_pending();
         }
+        self.wipe_learned();
     }
 
     /// Leaves memory as it was before these words.
@@ -2706,6 +2815,7 @@ impl Engine {
             // A chat app keeps the keyboard open after Send (M-3).
             self.leaning = LANGUAGE_START;
             self.confirm_pending();
+            self.wipe_recent_swipes();
             self.wipe_learned();
             self.save_memory();
         }
@@ -2714,6 +2824,7 @@ impl Engine {
             return;
         }
         self.end_word();
+        self.cursor_moved = true;
         self.unsettled = !self.learned.is_empty() || self.pending.is_some();
         self.drop_undo();
         self.failed_gesture = None;
@@ -2787,6 +2898,7 @@ impl Engine {
         let another_try = self.take_retry_of(path);
         self.commit_word(cased, alternatives);
         self.retry = another_try;
+        self.note_swipe(path);
         if let Some(word) = self.last_word.as_mut() {
             word.gesture = path.to_vec();
             word.revisable = revisable;
@@ -3026,6 +3138,9 @@ impl Engine {
         let gesture = std::mem::take(&mut word.gesture);
         self.take_back_other_picks(&chosen);
         let taught = self.teach(&chosen, &gesture);
+        if let Some(swipe) = self.recent_swipes.last_mut() {
+            swipe.word = chosen.to_lowercase();
+        }
         word.gesture = gesture;
         if let Some(pending) = self.pending.as_mut() {
             pending.written.clone_from(&chosen);
@@ -3417,6 +3532,130 @@ mod tests {
         assert_eq!(words.len(), SUGGESTIONS, "{words:?}");
     }
 
+    /// Swipes three words, moves the cursor to the end of the middle one, and replaces
+    /// it with `new`, tapped. Returns what the confirmation traced.
+    fn replace_middle_word(rig: &mut Rig, words: [&str; 3], new: &str, secret: Option<&[u8; 32]>) -> Vec<String> {
+        for word in words {
+            rig.swipe(word);
+        }
+        let [first, middle, last] = words;
+        let (before, after) = (format!("{first} {middle}"), format!(" {last}"));
+        let end = utf16_len(&before);
+        rig.engine.expected_selections.clear();
+        rig.send(Event::Selection { start: end, end });
+        rig.send(Event::Context { before: before.clone(), after: after.clone() });
+        for _ in middle.chars() {
+            rig.tap("⌫");
+        }
+        type_word(rig, new);
+        rig.engine.finish_typing_literal();
+        rig.engine.confirm_pending();
+        let step = rig.send(Event::Session { unix: 1 });
+        secret.map_or_else(Vec::new, |secret| opened_lines(&step, secret))
+    }
+
+    #[test]
+    fn a_word_after_the_cursor_is_not_taken_for_erased() {
+        let mut rig = plain_rig();
+        replace_middle_word(&mut rig, ["bonjour", "ou", "bonsoir"], "ouu", None);
+        assert!(rig.engine.memory.familiarity("bonsoir") > 0.0);
+    }
+
+    #[test]
+    fn a_word_replaced_with_the_cursor_leaves_memory() {
+        let mut rig = plain_rig();
+        replace_middle_word(&mut rig, ["bonjour", "ou", "bonsoir"], "ouu", None);
+        assert_eq!(rig.engine.memory.familiarity("ou"), 0.0);
+        assert_eq!(rig.engine.memory.next_after("ou"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_pair_on_the_right_follows_a_replaced_word() {
+        let mut rig = plain_rig();
+        replace_middle_word(&mut rig, ["bonjour", "ou", "bonsoir"], "ouu", None);
+        assert_eq!(rig.engine.memory.next_after("ouu"), ["bonsoir"]);
+    }
+
+    #[test]
+    fn a_correction_with_the_cursor_finds_its_gesture() {
+        let (mut rig, secret) = traced_rig(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
+        let lines = replace_middle_word(&mut rig, ["bonjour", "ou", "bonsoir"], "ouu", Some(&secret));
+        assert!(lines.iter().any(|line| line == "F\touu\tou"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_word_that_does_not_fit_the_gesture_is_a_change_of_mind() {
+        let (mut rig, secret) = traced_rig(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
+        let lines = replace_middle_word(&mut rig, ["bonjour", "ou", "bonsoir"], "zzz", Some(&secret));
+        assert!(lines.iter().any(|line| line == "M\tou"), "{lines:?}");
+        assert!(!rig.engine.memory.to_text().contains("~zzz"));
+    }
+
+    #[test]
+    fn a_pick_is_the_word_a_later_correction_replaces() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        rig.tap_at((540.0, 10.0));
+        assert_eq!(rig.engine.recent_swipes.first().map(|swipe| swipe.word.as_str()), Some("où"));
+    }
+
+    #[test]
+    fn a_replacement_needs_the_cursor_to_have_moved() {
+        let (mut rig, secret) = traced_rig(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
+        rig.swipe("ou");
+        rig.tap("⌫");
+        rig.tap("⌫");
+        type_word(&mut rig, "ouu");
+        rig.engine.finish_typing_literal();
+        rig.engine.confirm_pending();
+        let lines = opened_lines(&rig.send(Event::Session { unix: 1 }), &secret);
+        assert!(lines.iter().any(|line| line == "F\touu"), "the ordinary correction: {lines:?}");
+    }
+
+    #[test]
+    fn two_words_with_the_same_neighbours_teach_nothing() {
+        let mut rig = plain_rig();
+        rig.swipe("ou");
+        let shape = rig.engine.recent_swipes.first().cloned().unwrap();
+        rig.engine.recent_swipes.push(shape);
+        let previous = rig.engine.recent_swipes.first().unwrap().previous.clone();
+        assert!(rig.engine.take_replaced_swipe(&previous, "où").is_none());
+        assert_eq!(rig.engine.recent_swipes.len(), 2);
+    }
+
+    #[test]
+    fn a_wiped_swipe_holds_nothing() {
+        let mut swipe = RecentSwipe {
+            word: "ou".to_owned(),
+            previous: "bonjour".to_owned(),
+            history: vec!["bonjour".to_owned()],
+            next: Some("bonsoir".to_owned()),
+            gesture: vec![Sample { x: 1.0, y: 2.0, t_ms: 3 }],
+        };
+        swipe.wipe();
+        assert_eq!((swipe.word.len(), swipe.previous.len(), swipe.history.len()), (0, 0, 0));
+        assert!(swipe.next.is_none());
+        assert_eq!(swipe.gesture.first().map(|sample| sample.t_ms), Some(0));
+    }
+
+    #[test]
+    fn recent_swipes_stay_bounded_and_leave_with_the_keyboard() {
+        let mut rig = plain_rig();
+        for _ in 0..=RECENT_SWIPES {
+            rig.swipe("ou");
+        }
+        assert_eq!(rig.engine.recent_swipes.len(), RECENT_SWIPES);
+        rig.send(Event::Hidden);
+        assert_eq!(rig.engine.recent_swipes.len(), 0);
+    }
+
+    #[test]
+    fn a_field_without_learning_keeps_no_gesture() {
+        let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT, ime_options: android::NO_PERSONALIZED_LEARNING });
+        rig.swipe("ou");
+        assert_eq!(rig.engine.recent_swipes.len(), 0);
+    }
+
     #[test]
     fn a_new_gesture_replaces_what_backspace_left() {
         let mut rig = Rig::new(TEXT_FIELD);
@@ -3649,7 +3888,8 @@ mod tests {
         rig.send(Event::Selection { start: 3, end: 3 });
         rig.send(Event::Context { before: "bon".to_owned(), after: "jour bonsoir été".to_owned() });
         assert_eq!(rig.engine.learned.len(), 0);
-        assert!(rig.engine.pending.is_some());
+        assert!(rig.engine.pending.is_none());
+        assert!(rig.engine.memory.familiarity("été") > 0.0, "it stayed, so it counts");
     }
 
     #[test]

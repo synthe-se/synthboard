@@ -16,8 +16,11 @@
 //!   confirmed next tells, with `F` or `M`.
 //! - `F word`: what the gesture deleted last really meant. On a retry this comes
 //!   after the second gesture, `G(A) D G(B) F(B)`, and is about the first.
+//! - `F word old`: the same for the latest gesture that wrote `old`, replaced later
+//!   with the cursor.
 //! - `M`: the word confirmed after the gesture deleted last does not fit it. The
 //!   owner changed their mind, so that gesture was neither right nor wrong.
+//! - `M old`: the same for the latest gesture that wrote `old`.
 //! - `R old new`: the word after it replaced the last gesture's word, `G(A) R(A,X)
 //!   G(B)`, and `G(B)` already holds `X` in its history. Backspace taking that back
 //!   writes the same line the other way round, after the next word: `G(A) R(A,X)
@@ -190,6 +193,18 @@ pub fn parse(text: &str) -> Vec<Traced> {
                     gesture.truth.get_or_insert_with(|| (*meant).to_owned());
                 }
             }
+            ["F", meant, old] => {
+                if let Some(gesture) = found.iter_mut().rev().find(|gesture| gesture.word.to_lowercase() == *old) {
+                    gesture.truth = Some((*meant).to_owned());
+                    gesture.fate = Fate::Picked;
+                }
+            }
+            ["M", old] => {
+                if let Some(gesture) = found.iter_mut().rev().find(|gesture| gesture.word.to_lowercase() == *old) {
+                    gesture.truth = None;
+                    gesture.fate = Fate::Rephrased;
+                }
+            }
             ["M"] => {
                 if let Some(gesture) = found.iter_mut().rev().find(|gesture| gesture.fate == Fate::Deleted) {
                     gesture.truth = None;
@@ -253,7 +268,7 @@ pub fn is_sound(line: &str) -> bool {
 }
 
 fn is_correction(line: &str) -> bool {
-    matches!(line, "D" | "M") || line.starts_with("C\t") || line.starts_with("F\t") || line.starts_with("R\t")
+    matches!(line, "D" | "M") || ["C\t", "F\t", "M\t", "R\t"].iter().any(|start| line.starts_with(start))
 }
 
 /// Splits a trace into blocks: a gesture line with the corrections after it, or one
@@ -320,6 +335,20 @@ pub fn merge(archive: &str, received: &[String]) -> (String, usize) {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_correction_with_the_cursor_reaches_the_gesture_it_names() {
+        let trace = "K\ta:0:0:10:10 b:10:0:10:10\nG\tou\tou\t0,0,0 9,9,9\t\t\tn\nG\tici\tici\t0,0,0 9,9,9\t\t\tn\nF\toù\tou\n";
+        let found = parse(trace);
+        assert_eq!(found.first().map(|gesture| gesture.truth.as_deref()), Some(Some("où")));
+        assert_eq!(found.get(1).map(|gesture| gesture.fate), Some(Fate::Kept));
+    }
+
+    #[test]
+    fn a_change_of_mind_with_the_cursor_reaches_the_gesture_it_names() {
+        let trace = "K\ta:0:0:10:10 b:10:0:10:10\nG\tou\tou\t0,0,0 9,9,9\t\t\tn\nM\tou\n";
+        assert_eq!(parse(trace).first().map(|gesture| gesture.fate), Some(Fate::Rephrased));
+    }
 
     const G: &str = "G\tbon\tbon,bien\t1,2,0 3,4,10\tje suis\tbien\tn";
 

@@ -167,6 +167,13 @@ impl Memory {
         }
     }
 
+    /// Moves one count of `next` from following `old` to following `new`, for a word
+    /// the user replaced with the word after it already written.
+    pub fn move_pair(&mut self, old: &str, new: &str, next: &str) {
+        self.drop_pair(old, next);
+        self.bump(new.to_owned(), next);
+    }
+
     fn bump(&mut self, context: String, word: &str) {
         let count = self.pairs.entry(context).or_default().entry(word.to_owned()).or_default();
         self.pair_total += usize::from(*count == 0);
@@ -451,6 +458,15 @@ mod tests {
         memory.unlearn(&[], "pour", "zzgloop", |_| false);
         assert!(!memory.extra_words().is_some_and(|words| words.contains("zzgloop")));
         assert_eq!(memory.words.get("zzgloop"), Some(&1));
+    }
+
+    #[test]
+    fn a_pair_moves_to_the_word_that_replaced_its_first() {
+        let mut memory = Memory::default();
+        memory.learn("l'", "ami", |_| true);
+        memory.move_pair("l'", "le", "ami");
+        assert_eq!(memory.next_after("l'"), Vec::<String>::new());
+        assert_eq!(memory.next_after("le"), ["ami"]);
     }
 
     #[test]

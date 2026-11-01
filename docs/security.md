@@ -22,6 +22,7 @@ Out of scope: a compromised operating system, and a person watching the screen.
 | Model input | Features of the gesture under way, in ONNX Runtime's blocks | Zeroed where they end, through `--wrap=free` | Never |
 | Words ready to be taken back (`learned`) | Engine RAM: the last six words kept, with their context, former spelling and taught gestures | Dropped with the cursor moved, and wiped when the keyboard hides or on Erase. Lets erasing a word leave memory as it was | Never |
 | Corrections of the session (`fresh`) | Engine RAM: the last eight, each a word and a gesture shape | Follows blocked words and leaves with them. Wiped when the keyboard hides or on Erase | Never |
+| Recent swipes | Engine RAM: the last eight words written by gesture, with their neighbours and gesture, to link a correction made with the cursor | Never in a field that forbids learning, and wiped when the keyboard hides, on sending and in a new field | Never |
 | Password and PIN fields | Never read | No request for context, no mirror, no word gathered, no learning, no trace, always out of screenshots | Never |
 | Learned words | `memory.sealed` | Sealed in Rust to a device public key. In the clear only inside Rust, only while the keyboard shows | Manual export by the owner |
 | Recent emoji | App preferences | Android file encryption only: they are not typed text | Never |
