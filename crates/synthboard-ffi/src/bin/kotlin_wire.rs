@@ -4,8 +4,8 @@
 use std::fmt::Write as _;
 
 use synthboard_core::codec::{Described, Shape, Slot, Variant};
-use synthboard_core::{Command, DrawnKey, EmojiGroup, EmojiItem, Event, Field, Haptic, Icon, SLOT_CENTERS, Step};
-use synthboard_ffi::{Call, Reply};
+use synthboard_core::{Command, DrawnKey, EmojiGroup, EmojiItem, Event, Field, Haptic, Icon, SEARCH_CELLS, SLOT_CENTERS, Step};
+use synthboard_ffi::{Call, KEPT_BYTES, Reply};
 use synthboard_seal::KEY_BYTES;
 
 fn camel(name: &str) -> String {
@@ -185,6 +185,8 @@ fn main() -> std::io::Result<()> {
     let [left, center, right] = SLOT_CENTERS;
     let _ = writeln!(out, "val SLOT_CENTERS = listOf({left}f, {center}f, {right}f)");
     let _ = writeln!(out, "const val KEY_BYTES = {KEY_BYTES}");
+    let _ = writeln!(out, "const val SEARCH_CELLS = {SEARCH_CELLS}");
+    let _ = writeln!(out, "const val KEPT_BYTES = {KEPT_BYTES}");
     std::fs::write(path, out)
 }
 

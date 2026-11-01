@@ -82,6 +82,7 @@ class EmojiGrid(
         }
 
         override fun onFling(first: MotionEvent?, e: MotionEvent, vx: Float, vy: Float): Boolean {
+            // Timer justified: a fling is motion in time, driven by the frames.
             scroller.fling(0, scrollY.toInt(), 0, -vy.toInt(), 0, 0, 0, maxScroll().toInt())
             invalidate()
             return true

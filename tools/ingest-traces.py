@@ -8,6 +8,7 @@ Usage: `python3 -I tools/ingest-traces.py ARCHIVE RECEIVED...`.
 import os
 import pathlib
 import sys
+import time
 
 
 def blocks(text):
@@ -27,6 +28,27 @@ def blocks(text):
             yield [line]
     if current:
         yield current
+
+
+def is_sound(line):
+    """Refuses what could break the tools: anyone with the public key can forge a record."""
+    if not line.replace("\t", " ").isprintable():
+        return False
+    fields = line.split("\t")
+    try:
+        if fields[0] == "S" and len(fields) > 1:
+            time.localtime(int(fields[1]))
+        elif fields[0] == "K" and len(fields) > 1:
+            for key in filter(None, fields[1].split(" ")):
+                x, y, width, height = (float(value) for value in key.split(":")[1:])
+                if width <= 0 or height <= 0:
+                    return False
+        elif fields[0] == "G" and len(fields) >= 4:
+            for point in filter(None, fields[3].split(" ")):
+                [float(value) for value in point.split(",")]
+    except (ValueError, OverflowError, OSError):
+        return False
+    return True
 
 
 def main():
@@ -52,7 +74,10 @@ def main():
             elif len(block) > len(kept[position[head]]):
                 kept[position[head]] = block
 
-    archive.write_text("".join(line + "\n" for block in kept for line in block), "utf-8")
+    lines = [line for block in kept for line in block if is_sound(line)]
+    temporary = archive.with_suffix(".tmp")
+    temporary.write_text("".join(line + "\n" for line in lines), "utf-8")
+    temporary.replace(archive)
     print(f"{added} new gestures.")
 
 

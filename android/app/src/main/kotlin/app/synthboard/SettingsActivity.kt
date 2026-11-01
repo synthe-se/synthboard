@@ -19,6 +19,7 @@ import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
+import app.synthboard.core.Event
 import java.io.File
 import java.io.IOException
 
@@ -28,7 +29,7 @@ object Settings {
     const val TRAIL = "trail"
     const val HEIGHT = "height"
     const val FULL_HEIGHT = 100
-    const val ERASURES = "erasures"
+    const val QWERTY = "qwerty"
     const val TRACES = "traces"
     const val TONE = "tone"
     const val RECENTS = "recents"
@@ -37,6 +38,7 @@ object Settings {
     const val MEMORY_FILE = "memory.sealed"
     const val MEMORY_SECRET_FILE = "memory.key"
     const val MEMORY_PUBLIC_FILE = "memory.pub"
+    const val DAMAGED_MEMORY_FILE = "memory.damaged"
     private const val TRACE_KEY_ASSET = "trace.pub"
 
     /** The owner's public key, which only a personal build carries. */
@@ -50,7 +52,7 @@ object Settings {
 
     /** Every file holding something the keyboard learned or recorded. */
     fun personalFiles(context: Context): List<File> =
-        listOf(MEMORY_FILE, "$MEMORY_FILE.tmp", MEMORY_SECRET_FILE, MEMORY_PUBLIC_FILE, TraceProvider.FILE)
+        listOf(MEMORY_FILE, "$MEMORY_FILE.tmp", MEMORY_SECRET_FILE, MEMORY_PUBLIC_FILE, DAMAGED_MEMORY_FILE, TraceProvider.FILE)
             .map { File(context.filesDir, it) }
 }
 
@@ -122,6 +124,7 @@ class SettingsActivity : Activity() {
         heading(R.string.typing)
         toggle(R.string.haptics, Settings.HAPTICS)
         toggle(R.string.trail, Settings.TRAIL)
+        toggle(R.string.qwerty, Settings.QWERTY, false)
         val label = TextView(this)
         fun show(percent: Int) {
             label.text = getString(R.string.height, percent)
@@ -149,7 +152,7 @@ class SettingsActivity : Activity() {
             startActivityForResult(
                 Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
                     .setType("text/tab-separated-values")
-                    .putExtra(Intent.EXTRA_TITLE, "synthboard-mots.tsv"),
+                    .putExtra(Intent.EXTRA_TITLE, "synthboard-words.tsv"),
                 EXPORT,
             )
         }
@@ -191,13 +194,18 @@ class SettingsActivity : Activity() {
         }
     }
 
+    /**
+     * The core forgets first, so a later hide has nothing to save, and the
+     * files go on the I/O thread, after any save already queued.
+     */
     private fun eraseEverything() {
-        Settings.personalFiles(this).forEach(File::delete)
-        guarded { Vault.forget() }
-        store.edit()
-            .remove(Settings.RECENTS)
-            .putInt(Settings.ERASURES, store.getInt(Settings.ERASURES, 0) + 1)
-            .apply()
+        guarded { Core.keyboard.step(Event.ForgetAll) }
+        val files = Settings.personalFiles(this)
+        Core.onIo {
+            files.forEach(File::delete)
+            Vault.forget()
+        }
+        store.edit().remove(Settings.RECENTS).apply()
         list.addView(TextView(this).apply { setText(R.string.erased) })
     }
 

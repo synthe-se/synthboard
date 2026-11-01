@@ -10,7 +10,7 @@ use std::sync::OnceLock;
 
 use zeroize::Zeroize;
 
-use crate::{Keyboard, handle};
+use crate::{KEPT_BYTES, Keyboard, handle};
 
 type Env = *const *const *const c_void;
 type Object = *mut c_void;
@@ -35,9 +35,6 @@ fn keyboard() -> &'static Keyboard {
     static KEYBOARD: OnceLock<Keyboard> = OnceLock::new();
     KEYBOARD.get_or_init(Keyboard::new)
 }
-
-/// A reply larger than this was the emoji catalogue, which comes once.
-const KEPT_BYTES: usize = 64 * 1024;
 
 /// Where a direct buffer lives. Kotlin asks once per buffer.
 ///
@@ -70,6 +67,8 @@ pub unsafe extern "system" fn Java_app_synthboard_core_Native_call(
     // SAFETY: Kotlin keeps this buffer alive, and leaves it alone, during the call.
     let bytes = unsafe { std::slice::from_raw_parts_mut(input as *mut u8, usize::try_from(size).unwrap_or(0)) };
     REPLY.with_borrow_mut(|reply| {
+        // A reply nobody took must not lead into this one.
+        finish(reply);
         handle(keyboard(), bytes, reply);
         bytes.fill(0);
         let length = i32::try_from(reply.len()).unwrap_or(i32::MAX);

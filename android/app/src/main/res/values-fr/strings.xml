@@ -29,4 +29,5 @@
     <string name="delete_traces">Supprimer mes traces</string>
     <string name="traces_deleted">Traces supprimées.</string>
     <string name="try_out">Essaie le clavier ici</string>
+    <string name="qwerty">Disposition QWERTY</string>
 </resources>

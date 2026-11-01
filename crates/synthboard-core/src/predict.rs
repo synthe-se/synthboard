@@ -1,5 +1,6 @@
 //! The words offered when nothing is being typed.
 
+use crate::engine::BAR_SLOTS;
 use std::collections::HashMap;
 
 /// The likeliest next words after common words, and at the start of a sentence.
@@ -60,13 +61,10 @@ pub fn mail_domains(before: &str) -> Vec<String> {
     MAIL_DOMAINS
         .iter()
         .filter(|domain| domain.starts_with(&lower) && **domain != lower)
-        .take(OFFERED)
+        .take(BAR_SLOTS)
         .map(|domain| (*domain).to_owned())
         .collect()
 }
-
-/// The bar has three slots.
-const OFFERED: usize = 3;
 
 #[cfg(test)]
 mod tests {
@@ -79,7 +77,7 @@ mod tests {
         assert_eq!(mail_domains("john@gmail.com"), [] as [String; 0]);
         assert_eq!(mail_domains("john"), [] as [String; 0]);
         assert_eq!(mail_domains("john@ a"), [] as [String; 0]);
-        assert_eq!(mail_domains("a@").len(), OFFERED);
+        assert_eq!(mail_domains("a@").len(), BAR_SLOTS);
     }
 
     #[test]

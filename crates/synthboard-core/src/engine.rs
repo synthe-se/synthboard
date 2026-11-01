@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use synthboard_seal::KEY_BYTES;
-use synthswipe::{Affinities, Grammar, Layout, Lexicon, Params, signature, signature_distance, SENTENCE_START, Sample, correct, decode_in_context, tokens};
+use synthswipe::{fold, Affinities, Grammar, Layout, Lexicon, Params, signature, signature_distance, SENTENCE_START, Sample, correct, decode_in_context, tokens};
 use unicode_segmentation::UnicodeSegmentation;
 use zeroize::Zeroize;
 
@@ -58,7 +58,12 @@ const POPUP_LIFT_DP: f32 = 58.0;
 const POPUP_BAND_DP: f32 = 63.36;
 const SUGGESTIONS: usize = 4;
 const MAX_RECENTS: usize = 32;
-const SEARCH_CELLS: usize = 8;
+/// Emoji results in the search row. The shell draws from this same number.
+pub const SEARCH_CELLS: usize = 8;
+/// How far a deleted gesture may end from a word's keys and still mean it, in key pitches.
+const TEACH_REACH_KEYS: f32 = 2.0;
+/// More edits than a field can leave unconfirmed: a fast typist in a slow `WebView`.
+const MAX_UNCONFIRMED_EDITS: usize = 32;
 const CONTEXT_CHARS: usize = 48;
 const HISTORY_TOKENS: usize = 6;
 /// A word the user keeps choosing outranks a more common one after two uses:
@@ -71,7 +76,9 @@ const TRACE_LEADS: f32 = 0.35;
 const TRACE_VOTES: u32 = 2;
 /// Where the bar's three slots sit, left to right, as shares of its width. The
 /// shell draws them from this same list.
-pub const SLOT_CENTERS: [f32; 3] = [0.16, 0.5, 0.84];
+pub const SLOT_CENTERS: [f32; BAR_SLOTS] = [0.16, 0.5, 0.84];
+/// How many suggestions the bar shows.
+pub const BAR_SLOTS: usize = 3;
 /// What a screen reader says for a key of a field that must stay secret.
 const SECRET_KEY: &str = "•";
 /// The mirrors' room, so that writing into them does not leave old copies behind.
@@ -228,6 +235,8 @@ crate::wire_enum! {
         OpenEmojiSearch,
         /// The emoji panel was closed from inside.
         CloseEmojiPanel,
+    /// The user's choice of letter layout.
+    Alphabet { qwerty: bool },
     }
 }
 
@@ -291,8 +300,8 @@ struct Pending {
     previous: String,
     history: Vec<String>,
     written: String,
-    /// Caps lock says nothing about how a word is spelled.
-    locked: bool,
+    /// The keyboard chose the capitals, not the user.
+    imposed: bool,
     /// The gesture that failed before this word was written.
     failed_gesture: Option<Vec<Sample>>,
 }
@@ -354,6 +363,8 @@ pub struct Engine {
     pending: Option<Pending>,
     retry: Option<Retry>,
     held: Held,
+    /// The shift state when the current word began.
+    word_shift: Shift,
     undo: Option<String>,
     memory_changed: bool,
     typing: Option<Typing>,
@@ -380,7 +391,8 @@ pub struct Engine {
     after: String,
     hovered: Option<usize>,
     cursor: u32,
-    expected_selection: Option<u32>,
+    /// Cursor positions of our own edits that the field has yet to confirm.
+    expected_selections: Vec<u32>,
     selection: (u32, u32),
     last_word: Option<LastWord>,
     touch: Touch,
@@ -470,13 +482,6 @@ fn replace_wiped(target: &mut String, mut text: String) {
     target.zeroize();
     target.push_str(&text);
     text.zeroize();
-}
-
-impl Drop for Engine {
-    /// A panic replaces the engine, which must not free what the user typed as is.
-    fn drop(&mut self) {
-        self.forget_text();
-    }
 }
 
 /// A gesture decoder detached from the engine. The final word and the live
@@ -593,6 +598,7 @@ impl Engine {
             pending: None,
             retry: None,
             held: Held::Nothing,
+            word_shift: Shift::default(),
             undo: None,
             memory_changed: false,
             typing: None,
@@ -617,7 +623,7 @@ impl Engine {
             after: String::with_capacity(MIRROR_BYTES),
             hovered: None,
             cursor: 0,
-            expected_selection: None,
+            expected_selections: Vec::new(),
             selection: (0, 0),
             last_word: None,
             touch: Touch::Idle,
@@ -658,10 +664,31 @@ impl Engine {
         self.catalog = Some(catalog);
     }
 
-    /// The lexicon in use, kept across a restart of the engine.
+    /// The lexicon in use.
     #[must_use]
     pub fn lexicon(&self) -> Option<Arc<Lexicon>> {
         self.lexicon.clone()
+    }
+
+    /// A new engine after a panic: everything it was configured with, and no
+    /// state. The keyboard keeps working, and memory returns at the next opening.
+    #[must_use]
+    pub fn recovered(&self) -> Self {
+        let mut engine = Self {
+            lexicon: self.lexicon.clone(),
+            affinities: self.affinities.clone(),
+            grammar: self.grammar.clone(),
+            next_words: self.next_words.clone(),
+            catalog: self.catalog.clone(),
+            trace_key: self.trace_key,
+            memory_key: self.memory_key,
+            alphabet: self.alphabet,
+            height_scale: self.height_scale,
+            ..Self::new()
+        };
+        engine.step(Event::Resize { width: self.width, screen_height: self.screen_height, density: self.density });
+        engine.out.clear();
+        engine
     }
 
     /// Handles one event.
@@ -683,7 +710,15 @@ impl Engine {
             }
             Event::ForgetAll => {
                 self.memory = Arc::new(Memory::default());
+                if self.held == Held::Everything {
+                    self.held = Held::Waiting;
+                }
+                self.memory_key = None;
+                self.memory_changed = false;
                 self.pending = None;
+                self.retry = None;
+                self.last_word = None;
+                self.drop_undo();
                 self.recents.clear();
                 self.protected.clear();
                 self.clear_suggestions();
@@ -693,6 +728,14 @@ impl Engine {
                 self.shown(field, before, cursor);
             }
             Event::Hidden => self.hidden(),
+            Event::Alphabet { qwerty } => {
+                let alphabet = if qwerty { Alphabet::Qwerty } else { Alphabet::Azerty };
+                if alphabet != self.alphabet {
+                    self.alphabet = alphabet;
+                    self.layout_traced = false;
+                    self.rebuild();
+                }
+            }
             Event::Down { pointer, x, y, t } => self.down(pointer, x, y, t),
             Event::Move { pointer, x, y, t } => {
                 if self.pointer == Some(pointer) {
@@ -708,7 +751,7 @@ impl Engine {
             Event::Deadline { t } => self.deadline_passed(t),
             Event::Selection { start, end } => self.selection_changed(start, end),
             Event::Context { before, after } => {
-                if self.field.allows_reading() {
+                if self.held != Held::Nothing && self.field.allows_reading() {
                     replace_wiped(&mut self.before, before);
                     replace_wiped(&mut self.after, after);
                 }
@@ -784,6 +827,11 @@ impl Engine {
     }
 
     fn shown(&mut self, field: Field, before: String, cursor: u32) {
+        // A restarted field gets no `Hidden`, and nothing may cross to the next one.
+        self.confirm_pending();
+        self.drop_undo();
+        self.retry = None;
+        self.failed_gesture = None;
         self.field = field;
         self.leaning = LANGUAGE_START;
         replace_wiped(&mut self.before, if field.allows_reading() { before } else { String::new() });
@@ -792,7 +840,7 @@ impl Engine {
         }
         self.cursor = cursor;
         self.selection = (cursor, cursor);
-        self.expected_selection = None;
+        self.expected_selections.clear();
         self.end_word();
         self.layer = field.base_layer();
         self.touch = Touch::Idle;
@@ -832,10 +880,15 @@ impl Engine {
     /// Takes memory read for this opening. Until it arrives nothing is saved,
     /// or an empty memory would replace the real one.
     pub fn adopt_memory(&mut self, memory: Memory) {
-        if self.held != Held::Nothing {
+        if self.held == Held::Waiting {
             self.memory = Arc::new(memory);
             self.held = Held::Everything;
         }
+    }
+
+    #[cfg(test)]
+    fn import_for_test(&mut self, text: &str) {
+        self.memory = Arc::new(self.memory_reader()(text));
     }
 
     /// Reads and takes saved memory.
@@ -954,11 +1007,11 @@ impl Engine {
         memory.learn_after(&kept.history, &kept.previous, &word, known);
         // A sentence start capitalises anything, so only inner capitals count there.
         let starts_sentence = kept.previous == SENTENCE_START;
-        if !kept.locked && (!starts_sentence || kept.written.chars().skip(1).any(char::is_uppercase)) {
+        if !kept.imposed && (!starts_sentence || kept.written.chars().skip(1).any(char::is_uppercase)) {
             memory.set_form(&kept.written);
         }
         self.memory_changed = true;
-        if let Some(failed) = kept.failed_gesture {
+        if let Some(failed) = kept.failed_gesture.filter(|gesture| self.gesture_fits(&kept.written, gesture)) {
             self.trace(format!("F\t{}", kept.written));
             self.teach(&kept.written, &failed);
         }
@@ -1005,13 +1058,36 @@ impl Engine {
 
     /// Queues a finished word for learning, and learns the one before it.
     fn remember(&mut self, previous: String, history: Vec<String>, written: &str) {
-        self.update_leaning(written);
         self.confirm_pending();
         let failed_gesture = self.failed_gesture.take();
+        let imposed = self.capitals_are_imposed(written);
+        self.word_shift = Shift::Off;
         if self.field.allows_learning() {
-            let locked = self.shift == Shift::Locked;
-            self.pending = Some(Pending { previous, history, written: written.to_owned(), locked, failed_gesture });
+            self.update_leaning(written);
+            self.pending = Some(Pending { previous, history, written: written.to_owned(), imposed, failed_gesture });
         }
+    }
+
+    /// Whether the keyboard chose these capitals, so that they say nothing about
+    /// the word. Only a real mix of cases survives automatic capitals.
+    fn capitals_are_imposed(&self, written: &str) -> bool {
+        let mixed = written.chars().skip(1).any(char::is_uppercase) && written.chars().any(char::is_lowercase);
+        self.shift == Shift::Locked || self.word_shift == Shift::Locked || (self.word_shift == Shift::Auto && !mixed)
+    }
+
+    /// Whether a deleted gesture can have meant this word: it must start and
+    /// end near the word's first and last keys. Otherwise the user changed
+    /// their mind, and teaching the word would spoil the gesture.
+    fn gesture_fits(&self, word: &str, gesture: &[Sample]) -> bool {
+        let Some(layout) = self.board.as_ref().and_then(|board| board.layout.as_ref()) else {
+            return false;
+        };
+        let keys = fold(word);
+        let near = |letter: Option<&char>, sample: Option<&Sample>| match (letter.and_then(|&l| layout.center(l)), sample) {
+            (Some([x, y]), Some(point)) => (x - point.x).hypot(y - point.y) <= TEACH_REACH_KEYS * layout.pitch(),
+            _ => false,
+        };
+        near(keys.first(), gesture.first()) && near(keys.last(), gesture.last())
     }
 
     /// Queues a word that already ends the mirror.
@@ -1047,7 +1123,7 @@ impl Engine {
                     }
                 }
                 words.retain(|word| !self.memory.is_blocked(word));
-                words.truncate(3);
+                words.truncate(BAR_SLOTS);
                 words
             }
             _ => Vec::new(),
@@ -1546,6 +1622,9 @@ impl Engine {
                 }
             }
             self.refresh_shift();
+            if self.field.purpose() == Purpose::Email {
+                self.clear_suggestions();
+            }
             return;
         }
         self.settle_phantom(text);
@@ -1553,7 +1632,10 @@ impl Engine {
         self.spacing = Spacing::None;
         self.last_word = None;
         self.corrected = None;
-        if text.chars().all(char::is_alphabetic) {
+        if self.field.allows_reading() && text.chars().all(char::is_alphabetic) {
+            if self.typing.is_none() {
+                self.word_shift = self.shift;
+            }
             let tap = self.tap_point;
             let typing = self.typing.get_or_insert_with(Typing::default);
             typing.text.push_str(&cased);
@@ -1657,7 +1739,7 @@ impl Engine {
         if !offered.contains(&typing.text) && !self.is_valid_word(&typing.text) {
             offered.insert(1.min(offered.len()), typing.text.clone());
         }
-        offered.truncate(3);
+        offered.truncate(BAR_SLOTS);
         self.show_alternatives(&offered);
         if let Some(current) = self.typing.as_mut() {
             current.offered = offered;
@@ -1756,13 +1838,13 @@ impl Engine {
             self.before.push_str(text);
         }
         self.cursor += utf16_len(text);
-        self.expected_selection = Some(self.cursor);
+        self.expect_selection();
     }
 
     fn delete_units(&mut self, units: u32) {
         self.out.push(Command::DeleteBefore { units });
         self.cursor = self.cursor.saturating_sub(units);
-        self.expected_selection = Some(self.cursor);
+        self.expect_selection();
         let mut remaining = units;
         while remaining > 0 {
             let Some(letter) = self.before.pop() else {
@@ -1908,7 +1990,19 @@ impl Engine {
         }
     }
 
+    /// Fields confirm edits late, so several can be outstanding at once.
+    fn expect_selection(&mut self) {
+        if self.expected_selections.len() >= MAX_UNCONFIRMED_EDITS {
+            self.expected_selections.remove(0);
+        }
+        self.expected_selections.push(self.cursor);
+    }
+
     fn selection_changed(&mut self, start: u32, end: u32) {
+        // Android reports selections while hidden, in whatever field has focus.
+        if self.held == Held::Nothing {
+            return;
+        }
         self.selection = (start, end);
         if end == 0 {
             // A chat app keeps the keyboard open after Send (M-3).
@@ -1916,12 +2010,15 @@ impl Engine {
             self.confirm_pending();
             self.save_memory();
         }
-        if self.expected_selection == Some(end) && start == end {
+        if let Some(position) = self.expected_selections.iter().position(|&known| known == end && start == end) {
+            self.expected_selections.drain(..=position);
             return;
         }
         self.end_word();
+        self.drop_undo();
+        self.failed_gesture = None;
         self.cursor = end;
-        self.expected_selection = None;
+        self.expected_selections.clear();
         self.clear_suggestions();
         self.request_context();
     }
@@ -1963,6 +2060,7 @@ impl Engine {
         let Some(first) = words.first().cloned() else {
             return;
         };
+        self.word_shift = self.shift;
         if !self.layout_traced {
             self.trace_layout();
         }
@@ -2035,7 +2133,8 @@ impl Engine {
             (None, Some(word)) if !word.alternatives.is_empty() => &word.alternatives,
             _ => &self.predictions,
         };
-        list.get(slot).cloned()
+        // A phrasing is made of words: the first one is what can be forgotten.
+        list.get(slot).and_then(|word| word.split(' ').next()).map(str::to_owned)
     }
 
     fn forget(&mut self, word: &str) {
@@ -2761,12 +2860,12 @@ mod tests {
         rig.swipe("bonjour");
         rig.tap("⌫");
         assert_eq!(rig.text, "");
-        type_word(&mut rig, "zxcv");
+        type_word(&mut rig, "bxzr");
         rig.tap_at(rig.space());
         rig.text.clear();
         rig.engine.before.clear();
         rig.swipe("bonjour");
-        assert!(rig.text.ends_with("zxcv"), "{}", rig.text);
+        assert!(rig.text.ends_with("bxzr"), "{}", rig.text);
     }
 
     #[test]
@@ -2776,13 +2875,13 @@ mod tests {
         rig.engine.set_trace_key(public);
         rig.swipe("bonjour");
         rig.tap("⌫");
-        type_word(&mut rig, "zxcv");
+        type_word(&mut rig, "bxzr");
         let (x, y) = rig.space();
         let t = rig.t + 700;
         rig.send(Event::Down { pointer: 0, x, y, t });
         rig.send(Event::Up { pointer: 0, x, y, t: t + 30 });
         let step = rig.send(Event::Hidden);
-        assert!(traces(&step).iter().any(|record| opened(&secret, record) == "F\tzxcv"));
+        assert!(traces(&step).iter().any(|record| opened(&secret, record) == "F\tbxzr"));
     }
 
     #[test]
@@ -3444,6 +3543,117 @@ mod tests {
         assert_eq!(popup_of(".", Purpose::Url).first().map(String::as_str), Some(".com"));
         assert_eq!(popup_of(".", Purpose::Email).len(), 4);
         assert_eq!(popup_of(".", Purpose::Text), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_hidden_keyboard_ignores_the_field_that_has_focus() {
+        let mut rig = rig_with_text("bonjour");
+        rig.send(Event::Hidden);
+        let step = rig.send(Event::Selection { start: 3, end: 3 });
+        assert!(!step.commands.contains(&Command::RequestContext));
+        rig.send(Event::Context { before: "secret".to_owned(), after: String::new() });
+        assert_eq!(rig.engine.before, "");
+    }
+
+    #[test]
+    fn a_password_never_gathers_in_memory() {
+        let mut rig = Rig::new(Field { input_type: android::CLASS_TEXT | android::PASSWORD, ime_options: 0 });
+        rig.tap("a");
+        rig.tap("z");
+        assert!(rig.engine.typing.is_none());
+    }
+
+    #[test]
+    fn a_restarted_field_keeps_what_was_learned_and_carries_nothing_over() {
+        let mut rig = rig_with_text("une deux");
+        rig.engine.undo = Some("deux".to_owned());
+        rig.engine.import_for_test("bonjour\t3\n");
+        let field = Field { input_type: android::CLASS_TEXT | android::PASSWORD, ime_options: 0 };
+        rig.send(Event::Shown { field, before: String::new(), after: String::new(), cursor: 0 });
+        assert_eq!(rig.engine.undo, None);
+        rig.engine.load_memory("");
+        assert!(rig.engine.memory.familiarity("bonjour") > 0.0);
+    }
+
+    #[test]
+    fn erasing_while_open_leaves_nothing_to_save_with_an_old_key() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        rig.send(Event::ForgetAll);
+        let step = rig.send(Event::Hidden);
+        assert!(rig.saved(&step).is_none());
+    }
+
+    #[test]
+    fn a_change_of_mind_after_a_delete_teaches_nothing() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        rig.tap("⌫");
+        type_word(&mut rig, "ou");
+        rig.send(Event::Hidden);
+        assert!(!rig.engine.memory.to_text().contains('~'));
+    }
+
+    #[test]
+    fn capitals_from_a_field_are_not_a_spelling() {
+        let mut rig = plain_rig();
+        rig.engine.word_shift = Shift::Auto;
+        rig.engine.remember("le".to_owned(), Vec::new(), "Chat");
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.memory.form("chat"), "chat");
+        rig.engine.word_shift = Shift::Auto;
+        rig.engine.remember("le".to_owned(), Vec::new(), "GitHub");
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.memory.form("github"), "GitHub");
+    }
+
+    #[test]
+    fn a_late_confirmation_is_still_ours() {
+        let mut rig = plain_rig();
+        rig.send(Event::Text { text: "abc".to_owned() });
+        rig.tap("a");
+        rig.tap("z");
+        rig.engine.expected_selections = vec![4, 5];
+        rig.engine.cursor = 5;
+        let early = rig.send(Event::Selection { start: 4, end: 4 });
+        assert!(!early.commands.contains(&Command::RequestContext));
+        assert_eq!(rig.engine.expected_selections, [5]);
+    }
+
+    #[test]
+    fn a_moved_cursor_withdraws_the_undo_offer() {
+        let mut rig = rig_with_text("une deux");
+        rig.engine.undo = Some("deux".to_owned());
+        rig.send(Event::Selection { start: 1, end: 1 });
+        assert_eq!(rig.engine.undo, None);
+    }
+
+    #[test]
+    fn a_recovered_engine_can_type() {
+        let mut rig = plain_rig();
+        let mut engine = rig.engine.recovered();
+        engine.step(Event::Shown { field: rig.engine.field, before: String::new(), after: String::new(), cursor: 0 });
+        assert!(engine.board.is_some());
+        assert!(engine.lexicon().is_some());
+        rig.engine = engine;
+        rig.tap("a");
+        assert_eq!(rig.text, "a");
+    }
+
+    #[test]
+    fn a_phrase_in_the_bar_is_forgotten_by_its_first_word() {
+        let mut rig = plain_rig();
+        rig.engine.predictions = vec!["tiens au courant".to_owned()];
+        assert_eq!(rig.engine.slot_word(540.0).as_deref(), Some("tiens"));
+    }
+
+    #[test]
+    fn the_layout_follows_the_choice_of_letters() {
+        let mut rig = plain_rig();
+        let azerty = rig.center("a").0;
+        rig.send(Event::Alphabet { qwerty: true });
+        assert!(rig.center("a").1 > rig.center("q").1);
+        assert!((rig.center("q").0 - azerty).abs() < 1.0);
     }
 
     #[test]

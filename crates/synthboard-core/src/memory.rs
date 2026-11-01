@@ -6,15 +6,14 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
+use crate::engine::BAR_SLOTS;
 use synthswipe::{Lexicon, SENTENCE_START, signature_distance, tokens};
-use zeroize::Zeroize;
 
 /// Uses before a word missing from the lexicon becomes swipeable (B-10.6).
 const VALIDATIONS: u32 = 2;
 /// Weight of a learned word, about that of a fairly common word.
 const LEARNED_WEIGHT: f32 = 140.0;
 const MAX_ENTRIES: usize = 50_000;
-const SLOTS: usize = 3;
 const SEPARATOR: char = '\t';
 const FORM_MARK: char = '^';
 /// Words of context kept before a word, to learn whole phrasings.
@@ -53,19 +52,6 @@ pub struct Memory {
     /// The user's own gestures for words the decoder got wrong.
     traces: Vec<(String, Vec<[f32; 2]>)>,
     extra: Option<Arc<Lexicon>>,
-}
-
-impl Drop for Memory {
-    /// Without zeroing on free, what was learned would stay in the heap.
-    fn drop(&mut self) {
-        let learned = self.words.drain().map(|(word, _)| word);
-        let pairs = self.pairs.drain().flat_map(|(context, next)| {
-            std::iter::once(context).chain(next.into_keys())
-        });
-        let forms = self.forms.drain().flat_map(|(lower, form)| [lower, form]);
-        let traces = self.traces.drain(..).map(|(word, _)| word);
-        learned.chain(pairs).chain(forms).chain(traces).for_each(|mut word| word.zeroize());
-    }
 }
 
 impl Memory {
@@ -162,7 +148,7 @@ impl Memory {
             self.forget_rarest();
         }
         let count = self.words.entry(word.to_owned()).or_default();
-        *count += 1;
+        *count = count.saturating_add(1);
         let promoted = *count == VALIDATIONS;
         self.bump(previous.to_owned(), word);
         if promoted {
@@ -172,7 +158,8 @@ impl Memory {
     }
 
     fn bump(&mut self, context: String, word: &str) {
-        *self.pairs.entry(context).or_default().entry(word.to_owned()).or_default() += 1;
+        let count = self.pairs.entry(context).or_default().entry(word.to_owned()).or_default();
+        *count = count.saturating_add(1);
     }
 
     /// Records `word` after every length of context in `history`, so that the
@@ -228,7 +215,7 @@ impl Memory {
                 }
             }
         }
-        found.truncate(SLOTS);
+        found.truncate(BAR_SLOTS);
         found
     }
 
@@ -349,7 +336,7 @@ impl Memory {
         let mut found: Vec<(u32, &str)> =
             self.pairs.get(previous).into_iter().flatten().map(|(word, &count)| (count, word.as_str())).collect();
         found.sort_unstable_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
-        found.into_iter().take(SLOTS).map(|(_, word)| word.to_owned()).collect()
+        found.into_iter().take(BAR_SLOTS).map(|(_, word)| word.to_owned()).collect()
     }
 }
 

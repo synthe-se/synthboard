@@ -9,11 +9,12 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 personal="$root/data/raw/personal"
 archive="$personal/traces.tsv"
 inbox="$personal/inbox"
+cd "$root"
+# Build scripts run as the owner, so nothing is built with the volume open.
+cargo build -q --release -p synthswipe-bench
 "$root/tools/vault.sh" open
 trap '"$root/tools/vault.sh" close' EXIT
 mkdir -p "$inbox"
-cd "$root"
-cargo build -q --release -p synthswipe-bench
 
 tailscale file get --conflict=rename "$inbox" > /dev/null 2>&1 || true
 

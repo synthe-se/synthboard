@@ -1,6 +1,6 @@
 //! Binding between the Android shell and the Rust core. No logic lives here: it
 //! decodes each call, stops panics at the boundary and encodes the reply. The
-//! only `unsafe` in the project is in `jni`, and all it does is move bytes.
+//! only `unsafe` in the project is in `jni`, which moves bytes, and `wipe`, which clears them.
 
 #![deny(unsafe_code)]
 
@@ -15,6 +15,12 @@ use zeroize::Zeroizing;
 
 #[allow(unsafe_code)]
 mod jni;
+#[allow(unsafe_code)]
+mod wipe;
+
+/// A larger buffer came from loading assets, which happens once. The shell lets
+/// go of its own at this same size.
+pub const KEPT_BYTES: usize = 64 * 1024;
 
 wire_enum! {
     /// One request from the shell.
@@ -28,7 +34,7 @@ wire_enum! {
         LoadLexicon { bytes: Vec<u8> },
         NewMemoryKeys,
         SetMemoryKey { key: Vec<u8> },
-        LoadMemory { sealed: Vec<u8>, secret: Vec<u8> },
+        LoadMemory { sealed: Option<Vec<u8>>, secret: Vec<u8> },
         OpenMemory { sealed: Vec<u8>, secret: Vec<u8> },
     }
 }
@@ -76,9 +82,6 @@ fn guarded<T: Default>(work: impl FnOnce() -> T) -> (T, bool) {
 /// Opens sealed memory and wipes the secret key given for it.
 fn opened(sealed: &[u8], secret: Vec<u8>) -> Option<Zeroizing<Vec<u8>>> {
     let secret = Zeroizing::new(secret);
-    if sealed.is_empty() {
-        return Some(Zeroizing::new(Vec::new()));
-    }
     let key = Zeroizing::new(<[u8; KEY_BYTES]>::try_from(secret.as_slice()).ok()?);
     synthboard_seal::open(&key, sealed).ok().map(Zeroizing::new)
 }
@@ -121,10 +124,7 @@ impl Keyboard {
                 self.set_memory_key(key);
                 Reply::Done
             }
-            Call::LoadMemory { sealed, secret } => {
-                self.load_memory(&sealed, secret);
-                Reply::Done
-            }
+            Call::LoadMemory { sealed, secret } => Reply::Flag { on: self.load_memory(sealed.as_deref(), secret) },
             Call::OpenMemory { sealed, secret } => Reply::Bytes { bytes: self.open_memory(&sealed, secret) },
         }
     }
@@ -135,11 +135,7 @@ impl Keyboard {
         let mut engine = self.lock();
         let (step, panicked) = guarded(|| engine.step(event));
         if panicked {
-            let lexicon = engine.lexicon();
-            *engine = Engine::new();
-            if let Some(lexicon) = lexicon {
-                engine.set_lexicon(lexicon);
-            }
+            *engine = engine.recovered();
         }
         step
     }
@@ -170,16 +166,25 @@ impl Keyboard {
     }
 
     /// Opens saved memory, which only exists in the clear on this side of the
-    /// boundary, and gives it to the engine. No sealed bytes means no memory yet.
-    /// The engine's lock is not held meanwhile, so a long memory delays no tap.
-    fn load_memory(&self, sealed: &[u8], secret: Vec<u8>) {
+    /// boundary, and gives it to the engine. `None` means there is none yet.
+    /// Returns false if it cannot be opened: the shell must not leave it there,
+    /// or nothing would ever be saved again. The engine's lock is not held
+    /// meanwhile, so a long memory delays no tap.
+    fn load_memory(&self, sealed: Option<&[u8]>, secret: Vec<u8>) -> bool {
         let read = self.lock().memory_reader();
         let (memory, panicked) = guarded(|| {
-            let text = opened(sealed, secret)?;
+            let text = match sealed {
+                Some(sealed) => opened(sealed, secret)?,
+                None => Zeroizing::new(Vec::new()),
+            };
             Some(read(&String::from_utf8_lossy(&text)))
         });
-        if let (Some(memory), false) = (memory, panicked) {
-            self.lock().adopt_memory(memory);
+        match (memory, panicked) {
+            (Some(memory), false) => {
+                self.lock().adopt_memory(memory);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -191,11 +196,11 @@ impl Keyboard {
     /// The word the gesture under way would give, or nothing. The engine is
     /// locked only to copy the gesture, so taps never wait for this decode.
     fn preview(&self) -> String {
-        let job = self.lock().preview_job();
-        let Some((decoding, path)) = job else {
-            return String::new();
-        };
-        guarded(|| decoding.preview(&path)).0
+        guarded(|| {
+            let job = self.lock().preview_job();
+            job.map_or_else(String::new, |(decoding, path)| decoding.preview(&path))
+        })
+        .0
     }
 
     /// Parses the language data and gives it to the engine.
@@ -249,7 +254,7 @@ mod tests {
 
     #[test]
     fn no_saved_memory_opens_as_nothing_and_a_wrong_key_as_a_refusal() {
-        assert_eq!(opened(&[], Vec::new()).as_deref(), Some(&Vec::new()));
+        assert!(opened(&[], vec![0; KEY_BYTES]).is_none());
         let (_, public) = synthboard_seal::generate_keys().unwrap_or_default();
         let (other, _) = synthboard_seal::generate_keys().unwrap_or_default();
         let sealed = synthboard_seal::seal(&public, b"mot").unwrap_or_default();

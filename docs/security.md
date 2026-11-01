@@ -17,19 +17,20 @@ Out of scope: a compromised operating system, and a person watching the screen.
 
 | Data | Where | Protection | Leaves when |
 |---|---|---|---|
-| Typed text | Engine RAM while the keyboard shows | Zeroised on hide and on engine replacement. Native buffers wiped after each call. Never written or logged | As commits to the field, nothing else |
-| Password and PIN fields | Never read | No request for context, no mirror, no learning, no trace, always out of screenshots | Never |
+| Typed text | Engine RAM while the keyboard shows | Every native block is zeroed as it is freed. Never written or logged | As commits to the field, and as words the shell draws |
+| Password and PIN fields | Never read | No request for context, no mirror, no word gathered, no learning, no trace, always out of screenshots | Never |
 | Learned words | `memory.sealed` | Sealed in Rust to a device public key. In the clear only inside Rust, only while the keyboard shows | Manual export by the owner |
+| Recent emoji | App preferences | Android file encryption only: they are not typed text | Never |
 | Traces | `traces.sealed`, append only | Sealed in Rust before reaching Android. The phone cannot reopen them | A tap in settings, to Tailscale only |
 | Personal data on the Mac | Encrypted volume | Passphrase known only to the owner, closed when not in use | Never |
 
-The keyboard declares no permission and contains no network code. `tools/check-release.sh` and `deny.toml` enforce it.
+The keyboard declares no permission and contains no network code. `tools/check-release.sh` checks the permissions and looks for socket code; `deny.toml` keeps known network crates out.
 
 ## Cryptography
 
 - **Traces:** HPKE base mode, RFC 9180: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305. Info is `synthboard trace v2`. AAD is the header: a version byte and a 4-byte key id. Plaintext is padded to multiples of 128 bytes, to hide word lengths. Records have no sender authentication, so a forged record is possible for anyone with the public key: they are data to analyse, never instructions.
 - **Older records:** the earlier format stays readable by the owner's tools, behind the `legacy` feature. The phone's library has no such code.
-- **Memory:** the same HPKE records, sealed to a key pair of this phone. Saving needs only the public key, so it works on a locked phone and nothing waits in RAM. The secret key is stored under AES-256-GCM with a Keystore key that needs an unlocked phone, with the format as AAD. Kotlin only ever holds sealed bytes, and the secret key in an array it wipes, except in an export the owner asks for.
+- **Memory:** the same HPKE records, sealed to a key pair of this phone. Saving needs only the public key, so a session opened on an unlocked phone can save after it locks, and nothing waits in RAM. A session opened on a locked phone has no memory and saves nothing. The secret key is stored under AES-256-GCM with a Keystore key that needs an unlocked phone, with the format as AAD. Kotlin only ever holds sealed bytes, and the secret key in an array it wipes, except in an export the owner asks for. A file that no longer opens is set aside and memory starts afresh, since leaving it would stop all saving.
 - **Signing:** RSA-4096, on the encrypted volume, with a proof of rotation from the old debug key, which can no longer update the app.
 
 ## Keys
@@ -44,15 +45,20 @@ The keyboard declares no permission and contains no network code. `tools/check-r
 ## Hardening
 
 - Android: memory tagging on, heap zeroed at allocation, no backups, no cleartext traffic, `FLAG_SECURE` on the keyboard by default, obscured touches filtered, accessibility data limited to real accessibility tools, no Direct Boot, so the bundled keyboard handles the passphrase before the first unlock.
-- Rust: `unsafe_code` forbidden everywhere but `crates/synthboard-ffi/src/jni.rs`, three short functions that move bytes, overflow checks on in release, panics stopped at the FFI boundary and silenced, because a panic message could quote what was typed. `panic = "unwind"` is deliberate.
-- Boundary: messages travel in buffers outside the Java heap, which the garbage collector never copies and which are wiped after each call. A hand-written codec in safe Rust bounds every length and validates all text, with Kotlin generated from the Rust types with no procedural macro. `fuzz_wire` feeds it hostile bytes.
+- Rust: `unsafe_code` forbidden everywhere but `crates/synthboard-ffi/src/jni.rs`, three short functions that move bytes, and `wipe.rs`, an allocator that zeroes freed blocks, overflow checks on in release, panics stopped at the FFI boundary and silenced, because a panic message could quote what was typed. `panic = "unwind"` is deliberate.
+- Boundary: messages travel in direct buffers. On Android these live in the Java heap as non-movable arrays, so the garbage collector leaves no stray copy, and they are wiped after each call. A hand-written codec in safe Rust bounds every length and validates all text, with Kotlin generated from the Rust types with no procedural macro. `fuzz_wire` feeds it hostile bytes.
 - Supply chain: `cargo deny`, `cargo vet` and `cargo audit` in the release checks. Any version bump of a crypto crate means reading its diff.
 
 ## Known limits
 
 - A field's text reaches the keyboard as a Java `String`, which Android creates in our heap and which cannot be wiped. Reading is therefore limited to 256 characters each side of the cursor, and none in secret fields. Committed text goes the same way, through the platform's own API.
-- Memory tagging disables hardened_malloc's zeroing on free, so a freed Rust buffer keeps its bytes until reused. Tagging is kept because it stops an exploit inside the process from reaching them, and because this process handles text from other apps. A memory dump could still see what was not wiped, which is why text is wiped explicitly. Neither covers the Java heap.
-- Wiping is best effort where a buffer grows, since the old allocation is freed as it was.
+- Suggestions, previews, forget bubbles and search queries are drawn by Kotlin, so learned words exist as Java strings while shown, and the last ones stay until replaced.
+- Memory tagging disables hardened_malloc's zeroing on free. Tagging is kept because it stops an exploit inside the process from reaching freed bytes, and because this process handles text from other apps. `wipe.rs` restores the zeroing for native memory. The Java heap has neither.
+- Copies on the native stack are not wiped.
+- `cargo vet` exempts every crate: it makes updates deliberate, but nothing has been audited.
+- Gradle plugins and the distribution have no integrity check.
+- A forged trace record can only pollute statistics: ingestion drops lines that could break the tools.
+- `FLAG_SECURE` was verified on the phone with a capture, and is not covered by a test.
 
 ## Standards
 

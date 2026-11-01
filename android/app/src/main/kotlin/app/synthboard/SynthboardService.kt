@@ -25,6 +25,7 @@ import app.synthboard.core.Haptic
 import app.synthboard.core.Icon
 import app.synthboard.core.KEY_BYTES
 import java.io.File
+import java.io.FileOutputStream
 
 /**
  * Forwards Android events to the Rust core and applies its commands. The core
@@ -44,7 +45,6 @@ class SynthboardService : InputMethodService() {
     private var emojiLoading = false
     private var tone = 0
     private var haptics = true
-    private var seenErasures = 0
 
     private var readable = false
 
@@ -74,7 +74,6 @@ class SynthboardService : InputMethodService() {
     private fun restoreUserData() {
         val saved = preferences()
         tone = saved.getInt(Settings.TONE, 0)
-        seenErasures = saved.getInt(Settings.ERASURES, 0)
         val recents = saved.getString(Settings.RECENTS, "").orEmpty().split(' ').filter(String::isNotEmpty)
         send(Event.Recents(recents))
     }
@@ -87,10 +86,18 @@ class SynthboardService : InputMethodService() {
     private fun loadMemory() {
         Core.onIo {
             val secret = memorySecret()
-            val sealed = personalFile(Settings.MEMORY_FILE)
-            keyboard.setMemoryKey(personalFile(Settings.MEMORY_PUBLIC_FILE).readBytes())
-            keyboard.loadMemory(if (sealed.exists()) sealed.readBytes() else ByteArray(0), secret)
-            secret.fill(0)
+            try {
+                keyboard.setMemoryKey(personalFile(Settings.MEMORY_PUBLIC_FILE).readBytes())
+                val sealed = personalFile(Settings.MEMORY_FILE)
+                val saved = if (sealed.exists()) sealed.readBytes() else null
+                if (!keyboard.loadMemory(saved, secret)) {
+                    // Left in place it would stop every later save, silently.
+                    sealed.renameTo(personalFile(Settings.DAMAGED_MEMORY_FILE))
+                    keyboard.loadMemory(null, secret)
+                }
+            } finally {
+                secret.fill(0)
+            }
         }
     }
 
@@ -151,17 +158,17 @@ class SynthboardService : InputMethodService() {
         haptics = saved.getBoolean(Settings.HAPTICS, true)
         view?.showTrail = saved.getBoolean(Settings.TRAIL, true)
         send(Event.HeightScale(saved.getInt(Settings.HEIGHT, Settings.FULL_HEIGHT) / Settings.FULL_HEIGHT.toFloat()))
-        val erasures = saved.getInt(Settings.ERASURES, 0)
-        if (erasures != seenErasures) {
-            seenErasures = erasures
-            send(Event.ForgetAll)
-        }
+        send(Event.Alphabet(saved.getBoolean(Settings.QWERTY, false)))
     }
 
     private fun writeFile(target: File, bytes: ByteArray) {
         val temporary = File(filesDir, "${target.name}.tmp")
-        temporary.writeBytes(bytes)
-        temporary.renameTo(target)
+        FileOutputStream(temporary).use { out ->
+            out.write(bytes)
+            // Without this a power cut can keep the rename and lose the bytes.
+            out.fd.sync()
+        }
+        check(temporary.renameTo(target))
     }
 
     /** The memory arrives sealed to a public key, so this works on a locked phone. */
@@ -218,6 +225,12 @@ class SynthboardService : InputMethodService() {
 
     override fun onEvaluateFullscreenMode(): Boolean = false
 
+    /** Focus can move while hidden: nothing is readable until a field is shown. */
+    override fun onStartInput(attribute: EditorInfo, restarting: Boolean) {
+        super.onStartInput(attribute, restarting)
+        readable = false
+    }
+
     override fun onStartInputView(info: EditorInfo, restarting: Boolean) {
         super.onStartInputView(info, restarting)
         guarded {
@@ -241,6 +254,7 @@ class SynthboardService : InputMethodService() {
 
     override fun onFinishInputView(finishingInput: Boolean) {
         strip?.clear()
+        readable = false
         send(Event.Hidden)
         super.onFinishInputView(finishingInput)
     }

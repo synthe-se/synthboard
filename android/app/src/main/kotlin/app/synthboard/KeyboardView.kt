@@ -17,6 +17,7 @@ import app.synthboard.core.DrawnKey
 import app.synthboard.core.EmojiItem
 import app.synthboard.core.Event
 import app.synthboard.core.Icon
+import app.synthboard.core.SEARCH_CELLS
 import app.synthboard.core.SLOT_CENTERS
 
 /** The corners of keys and of everything drawn like them. */
@@ -245,7 +246,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     /** The light query input: magnifier, typed text, caret and clear cross. */
     private fun drawSearchRow(canvas: Canvas) {
         val center = barHeight / 2
-        Icons.drawSearch(canvas, barHeight / 2, center, ICON_DP * density * 0.8f, iconPaint)
+        Icons.drawSearch(canvas, barHeight / 2, center, ICON_DP * density * SEARCH_ICON_SHARE, iconPaint)
         text.textAlign = Paint.Align.LEFT
         text.textSize = SUGGESTION_SP * density
         text.color = palette.text
@@ -336,6 +337,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
                 return
             }
             trailPaint.alpha = (TRAIL_ALPHA * (1f - age.toFloat() / TRAIL_FADE_MS)).toInt()
+            // Timer justified: a fade has no event to end on but the clock of the frames.
             postInvalidateOnAnimation()
         }
         canvas.drawPath(trail, trailPaint)
@@ -415,7 +417,7 @@ class KeyboardView(context: Context, private val send: (Event) -> Unit) : View(c
     }
 
     private companion object {
-        const val SEARCH_CELLS = 8
+        const val SEARCH_ICON_SHARE = 0.8f
         const val EMOJI_RESULT_SP = 24f
         const val ICON_DP = 24f
         const val ICON_STROKE_DP = 2.2f

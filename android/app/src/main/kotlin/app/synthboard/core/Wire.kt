@@ -3,7 +3,7 @@ package app.synthboard.core
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-/** A buffer outside the Java heap: the garbage collector never copies what it holds. */
+/** A buffer the garbage collector never moves, so no stray copy of what it holds is left behind. */
 internal fun directBuffer(capacity: Int): ByteBuffer =
     ByteBuffer.allocateDirect(capacity).order(ByteOrder.LITTLE_ENDIAN)
 
@@ -20,7 +20,7 @@ class WireWriter(private val allocate: (Int) -> ByteBuffer = ::directBuffer) {
 
     /** Starts the next message, after Rust wiped this one. */
     fun clear() {
-        if (buffer.capacity() > KEPT) buffer = allocate(INITIAL)
+        if (buffer.capacity() > KEPT_BYTES) buffer = allocate(INITIAL)
         buffer.clear()
     }
 
@@ -80,7 +80,6 @@ class WireWriter(private val allocate: (Int) -> ByteBuffer = ::directBuffer) {
 
     private companion object {
         const val INITIAL = 4 * 1024
-        const val KEPT = 64 * 1024
     }
 }
 

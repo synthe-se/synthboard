@@ -88,7 +88,9 @@ class Keyboard {
 
     fun setMemoryKey(key: ByteArray) = done(Call.SetMemoryKey(key))
 
-    fun loadMemory(sealed: ByteArray, secret: ByteArray) = done(Call.LoadMemory(sealed, secret))
+    /** False if the memory cannot be opened. No sealed bytes means there is none yet. */
+    fun loadMemory(sealed: ByteArray?, secret: ByteArray): Boolean =
+        (send(Call.LoadMemory(sealed, secret)) as Reply.Flag).on
 
     fun openMemory(sealed: ByteArray, secret: ByteArray): ByteArray =
         (send(Call.OpenMemory(sealed, secret)) as Reply.Bytes).bytes

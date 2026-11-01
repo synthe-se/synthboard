@@ -58,14 +58,15 @@ class SettingsTest {
     }
 
     @Test
-    fun erasing_removes_memory_and_traces_and_tells_the_keyboard() {
+    fun erasing_removes_memory_and_traces() {
         val personal = Settings.personalFiles(context)
         personal.forEach { it.writeText("x") }
         val activity = Robolectric.buildActivity(SettingsActivity::class.java).setup().get()
         press(activity, R.string.erase)
+        val done = java.util.concurrent.CountDownLatch(1)
+        Core.onIo { done.countDown() }
+        assertTrue(done.await(5, java.util.concurrent.TimeUnit.SECONDS))
         personal.forEach { assertFalse(it.name, it.exists()) }
-        val store = context.getSharedPreferences(Settings.FILE, Context.MODE_PRIVATE)
-        assertEquals(1, store.getInt(Settings.ERASURES, 0))
     }
 
     @Test

@@ -91,7 +91,8 @@ impl Layout {
         self.pitch
     }
 
-    pub(crate) fn center(&self, label: char) -> Option<Point> {
+    #[must_use]
+    pub fn center(&self, label: char) -> Option<Point> {
         self.by_label.get(&label).copied()
     }
 
