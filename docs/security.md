@@ -25,7 +25,7 @@ Out of scope: a compromised operating system, and a person watching the screen.
 | Password and PIN fields | Never read | No request for context, no mirror, no word gathered, no learning, no trace, always out of screenshots | Never |
 | Learned words | `memory.sealed` | Sealed in Rust to a device public key. In the clear only inside Rust, only while the keyboard shows | Manual export by the owner |
 | Recent emoji | App preferences | Android file encryption only: they are not typed text | Never |
-| Traces | `traces.sealed`, append only | Sealed in Rust before reaching Android. The phone cannot reopen them. Switched off, the engine seals nothing and runs no second reading | A tap in settings, to Tailscale only |
+| Traces | `traces.sealed`, append only: gestures, what became of them, and a word with the word the next one replaced it by | Sealed in Rust before reaching Android. The phone cannot reopen them. Switched off, the engine seals nothing and runs no second reading | A tap in settings, to Tailscale only |
 | Personal data on the Mac | Encrypted volume | Passphrase known only to the owner, closed when not in use | Never |
 
 The keyboard declares no permission and contains no network code. `tools/check-release.sh` checks the permissions and looks for socket code; `deny.toml` keeps known network crates out.

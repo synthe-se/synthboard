@@ -3,11 +3,20 @@
 use std::sync::{Arc, OnceLock};
 
 use libfuzzer_sys::fuzz_target;
-use synthboard_core::{Catalog, Command, Engine, Event, Field, NextWords};
-use synthswipe::{Affinities, Encoder, Grammar, Lexicon, MODEL_HEAD_BYTES, MODEL_MAGIC, Neural, split_model};
+use synthboard_core::{Catalog, Command, DrawnKey, Engine, Event, Field, Icon, NextWords, Step};
+use synthswipe::{Affinities, Bigrams, Encoder, Grammar, Lexicon, MODEL_HEAD_BYTES, MODEL_MAGIC, Neural, fold, split_model};
 
 const EVENT_BYTES: usize = 22;
 const RULES: &str = include_str!("../../android/app/src/main/assets/grammar.tsv");
+/// What makes a word revised by the next: a verb that wants the other reading.
+const COUNTS: &str = "peur 1000\npeut 1000\naller 1000\nrien 100000\npeut aller 900\n";
+/// Steps of a scripted swipe between two keys, and the milliseconds of each.
+const SWIPE_STEPS: u32 = 8;
+const SWIPE_STEP_MS: u64 = 12;
+const SWIPE_PAUSE_MS: u64 = 700;
+/// The first byte chooses the script: these bits swipe a pair, then backspace after it.
+const SWIPES_PAIR: u8 = 1;
+const TAKES_IT_BACK: u8 = 2;
 
 /// Answers with values that follow the gesture, so that the blend gets real work.
 #[derive(Debug)]
@@ -40,11 +49,18 @@ fn shared() -> &'static Shared {
             ("où", 150.0, 1),
             ("ou", 170.0, 1),
             ("merge", 110.0, 2),
+            ("peur", 170.0, 0),
+            ("peut", 165.0, 1),
+            ("aller", 150.0, 1),
             ("i'll", 120.0, 2),
             ("👍", 100.0, 0),
         ])),
-        affinities: Arc::new(Affinities::default()),
-        grammar: Arc::new(Grammar::parse(&format!("{RULES}suis\t1\nsous\t0\nbonjour\t0\n"))),
+        affinities: {
+            let mut pairs = Vec::new();
+            Bigrams::parse(COUNTS).compile_into(1, 0.0, &mut pairs);
+            Arc::new(Affinities::from_bytes(&Affinities::to_bytes(pairs)))
+        },
+        grammar: Arc::new(Grammar::parse(&format!("{RULES}suis\t1\nsous\t0\nbonjour\t0\naller\t64\n"))),
         next_words: Arc::new(NextWords::parse("<s>\tje the\nje\tsuis\n")),
         catalog: Arc::new(Catalog::parse("Food\t🍕\t\tpizza|cheese\nPeople\t👍\t👍🏽\tpouce|thumbs up\n")),
         neural: {
@@ -110,6 +126,53 @@ fn event(chunk: &[u8]) -> Event {
     }
 }
 
+fn center(key: &DrawnKey) -> (f32, f32) {
+    (key.x + key.width / 2.0, key.y + key.height / 2.0)
+}
+
+fn drawn_keys(step: &Step) -> Vec<DrawnKey> {
+    step.commands
+        .iter()
+        .find_map(|command| match command {
+            Command::Keys { keys, .. } => Some(keys.clone()),
+            _ => None,
+        })
+        .unwrap_or_default()
+}
+
+/// Draws a word across its keys, and gives what lifting the finger did.
+fn swipe(engine: &mut Engine, keys: &[DrawnKey], word: &str, clock: &mut u64) -> Step {
+    let points: Vec<(f32, f32)> =
+        fold(word).iter().filter_map(|letter| keys.iter().find(|key| key.label == letter.to_string())).map(center).collect();
+    let Some(&(mut x, mut y)) = points.first() else {
+        return Step::default();
+    };
+    *clock += SWIPE_PAUSE_MS;
+    engine.step(Event::Down { pointer: 0, x, y, t: *clock });
+    for &(to_x, to_y) in points.iter().skip(1) {
+        for step in 1..=SWIPE_STEPS {
+            let ratio = step as f32 / SWIPE_STEPS as f32;
+            *clock += SWIPE_STEP_MS;
+            engine.step(Event::Move { pointer: 0, x: x + (to_x - x) * ratio, y: y + (to_y - y) * ratio, t: *clock });
+        }
+        (x, y) = (to_x, to_y);
+    }
+    engine.step(Event::Up { pointer: 0, x, y, t: *clock })
+}
+
+/// Tries the engine right after a revision, with every event still to come.
+fn revise(engine: &mut Engine, keys: &[DrawnKey], takes_it_back: bool) {
+    let mut clock = 0;
+    swipe(engine, keys, "peur", &mut clock);
+    let lift = swipe(engine, keys, "aller", &mut clock);
+    assert!(lift.commands.iter().any(|command| matches!(command, Command::DeleteBefore { .. })), "the script no longer revises");
+    if let Some(key) = keys.iter().find(|key| key.icon == Icon::Delete && takes_it_back) {
+        let (x, y) = center(key);
+        engine.step(Event::Down { pointer: 0, x, y, t: clock + SWIPE_PAUSE_MS });
+        engine.step(Event::Up { pointer: 0, x, y, t: clock + SWIPE_PAUSE_MS + SWIPE_STEP_MS });
+    }
+}
+
 fuzz_target!(|data: &[u8]| {
     let data_shared = shared();
     let mut engine = Engine::new();
@@ -124,8 +187,12 @@ fuzz_target!(|data: &[u8]| {
     engine.set_trace_key([9; 32]);
     engine.set_memory_key([7; 32]);
     engine.step(Event::Resize { width: 1080.0, screen_height: 2424.0, density: 2.625 });
-    engine.step(Event::Shown { field: Field { input_type: 1, ime_options: 0 }, before: String::new(), after: String::new(), cursor: 0 });
+    let shown = engine.step(Event::Shown { field: Field { input_type: 1, ime_options: 0 }, before: String::new(), after: String::new(), cursor: 0 });
     engine.load_memory("bonjour\t2\n<s>\tbonjour\t2\n^GitHub\n!merge\n");
+    let script = data.first().copied().unwrap_or(0);
+    if script & SWIPES_PAIR != 0 {
+        revise(&mut engine, &drawn_keys(&shown), script & TAKES_IT_BACK != 0);
+    }
     for chunk in data.chunks_exact(EVENT_BYTES) {
         let current = event(chunk);
         if let Some((decoding, path)) = engine.preview_job() {

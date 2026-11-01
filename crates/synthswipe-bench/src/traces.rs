@@ -18,18 +18,24 @@
 //!   after the second gesture, `G(A) D G(B) F(B)`, and is about the first.
 //! - `M`: the word confirmed after the gesture deleted last does not fit it. The
 //!   owner changed their mind, so that gesture was neither right nor wrong.
+//! - `R old new`: the word after it replaced the last gesture's word, `G(A) R(A,X)
+//!   G(B)`, and `G(B)` already holds `X` in its history. Backspace taking that back
+//!   writes the same line the other way round, after the next word: `G(A) R(A,X)
+//!   G(B) R(X,A)`.
 //!
 //! Anyone with the public key can forge a record, so a line that does not parse
 //! is skipped, and `is_sound` keeps it out of the archive.
 
 use std::sync::Arc;
 
-use synthswipe::{Key, Layout, LayoutError, Sample, is_key_label};
+use synthswipe::{Key, Layout, LayoutError, Sample, is_key_label, tokens};
 
 const SEPARATOR: char = '\t';
 const LIST_SEPARATOR: char = ' ';
 /// The fields of a key after its label: x, y, width and height.
 const KEY_FIELDS: usize = 4;
+/// How many gestures back a revision line can be about: its own, and the one after.
+const REVISION_REACH: usize = 2;
 
 /// One key of a traced layout, in pixels.
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +57,17 @@ pub enum Fate {
     Rephrased,
 }
 
+/// What the word after a gesture's word did to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Revised {
+    #[default]
+    Never,
+    /// The word was replaced, and that stayed.
+    Stayed,
+    /// Backspace put the word back.
+    TakenBack,
+}
+
 /// Who chose the word a gesture wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reader {
@@ -68,6 +85,7 @@ pub struct Traced {
     /// The word really meant, if that is known.
     pub truth: Option<String>,
     pub fate: Fate,
+    pub revised: Revised,
     pub samples: Vec<Sample>,
     pub history: Vec<String>,
     pub other: String,
@@ -145,6 +163,7 @@ pub fn parse(text: &str) -> Vec<Traced> {
                     candidates: candidates.split(',').filter(|word| !word.is_empty()).map(str::to_owned).collect(),
                     truth: Some((*word).to_owned()),
                     fate: Fate::Kept,
+                    revised: Revised::Never,
                     samples,
                     history: rest.first().map_or_else(Vec::new, |line| {
                         line.split(LIST_SEPARATOR).filter(|word| !word.is_empty()).map(str::to_owned).collect()
@@ -177,10 +196,45 @@ pub fn parse(text: &str) -> Vec<Traced> {
                     gesture.fate = Fate::Rephrased;
                 }
             }
+            ["R", old, new] => revise(&mut found, old, new),
             _ => {}
         }
     }
     found
+}
+
+/// Applies a revision line, or the line taking it back. Its word stands behind the
+/// next gesture by then, and that gesture may well have written the same word.
+fn revise(found: &mut [Traced], old: &str, new: &str) {
+    let holds_old = |gesture: &Traced| gesture.truth.as_deref() == Some(old);
+    let revised = found.iter_mut().rev().take(REVISION_REACH).find(|gesture| gesture.revised == Revised::Stayed && holds_old(gesture));
+    if let Some(gesture) = revised {
+        gesture.truth = Some(new.to_owned());
+        gesture.revised = Revised::TakenBack;
+    } else if let Some(gesture) = found.last_mut().filter(|gesture| holds_old(gesture)) {
+        gesture.truth = Some(new.to_owned());
+        gesture.revised = Revised::Stayed;
+    }
+}
+
+/// Whether `next` wrote the word right after `word`, once corrected: nothing was
+/// typed between them and no sentence ended. A comma leaves no mark in a history, so
+/// it passes here, though no revision would cross one on the keyboard.
+fn follows(word: &Traced, next: &Traced) -> bool {
+    let Some(said) = word.truth.as_deref().map(tokens).filter(|said| !said.is_empty()) else {
+        return false;
+    };
+    let mut sentence = word.history.clone();
+    sentence.extend_from_slice(&said);
+    word.session == next.session && next.history.len() >= said.len() && sentence.ends_with(&next.history)
+}
+
+/// The gestures whose word is known, with the gesture that wrote the word after it.
+pub fn next_word_pairs(gestures: &[Traced]) -> impl Iterator<Item = (&Traced, &Traced)> {
+    gestures.windows(2).filter_map(|pair| match pair {
+        [word, next] if follows(word, next) => Some((word, next)),
+        _ => None,
+    })
 }
 
 /// Whether a line can enter the archive: anyone with the public key can forge one.
@@ -199,7 +253,7 @@ pub fn is_sound(line: &str) -> bool {
 }
 
 fn is_correction(line: &str) -> bool {
-    matches!(line, "D" | "M") || line.starts_with("C\t") || line.starts_with("F\t")
+    matches!(line, "D" | "M") || line.starts_with("C\t") || line.starts_with("F\t") || line.starts_with("R\t")
 }
 
 /// Splits a trace into blocks: a gesture line with the corrections after it, or one
@@ -344,6 +398,64 @@ mod tests {
     }
 
     #[test]
+    fn a_revision_gives_the_gesture_its_final_word() {
+        let read = parse("G\ta\ta,x\t1,2,0\nR\ta\tx\nG\tb\tb\t1,2,0\tx\n");
+        assert_eq!((read[0].word.as_str(), read[0].truth.as_deref()), ("a", Some("x")));
+        assert_eq!((read[0].fate, read[0].revised), (Fate::Kept, Revised::Stayed));
+        assert_eq!(read[1].revised, Revised::Never);
+    }
+
+    #[test]
+    fn a_revision_taken_back_restores_the_word() {
+        let read = parse("G\ta\ta,x\t1,2,0\nR\ta\tx\nG\tx\tx\t1,2,0\tx\nR\tx\ta\n");
+        assert_eq!((read[0].truth.as_deref(), read[0].revised), (Some("a"), Revised::TakenBack));
+        assert_eq!((read[1].truth.as_deref(), read[1].revised), (Some("x"), Revised::Never));
+    }
+
+    #[test]
+    fn a_revision_of_something_else_is_ignored() {
+        let read = parse("G\ta\ta\t1,2,0\nR\tz\tx\n");
+        assert_eq!((read[0].truth.as_deref(), read[0].revised), (Some("a"), Revised::Never));
+        assert_eq!(parse("R\ta\tx\n").len(), 0);
+    }
+
+    #[test]
+    fn a_revision_reaches_no_further_than_the_next_gesture() {
+        let read = parse("G\ta\ta\t1,2,0\nR\ta\tx\nG\tb\tb\t1,2,0\nG\tc\tc\t1,2,0\nR\tx\ta\n");
+        assert_eq!((read[0].truth.as_deref(), read[0].revised), (Some("x"), Revised::Stayed));
+    }
+
+    fn pairs(text: &str) -> Vec<(String, String)> {
+        next_word_pairs(&parse(text)).map(|(word, next)| (word.word.clone(), next.word.clone())).collect()
+    }
+
+    #[test]
+    fn two_gestures_in_a_row_make_a_pair() {
+        assert_eq!(pairs("G\ta\ta\t1,2,0\tje\nG\tb\tb\t1,2,0\tje a\n"), [("a".to_owned(), "b".to_owned())]);
+    }
+
+    #[test]
+    fn a_pair_reads_the_sentence_through_the_corrected_word() {
+        assert_eq!(pairs("G\ta\ta\t1,2,0\nC\tx\nG\tb\tb\t1,2,0\tx\n").len(), 1);
+        assert_eq!(pairs("G\ta\ta\t1,2,0\nC\tx\nG\tb\tb\t1,2,0\ta\n").len(), 0);
+    }
+
+    #[test]
+    fn no_pair_across_a_sentence_a_session_a_typed_word_or_a_deletion() {
+        assert_eq!(pairs("G\ta\ta\t1,2,0\tje\nG\tb\tb\t1,2,0\n").len(), 0);
+        assert_eq!(pairs("S\t1\nG\ta\ta\t1,2,0\nS\t2\nG\tb\tb\t1,2,0\ta\n").len(), 0);
+        assert_eq!(pairs("G\ta\ta\t1,2,0\nG\tb\tb\t1,2,0\ta tapé\n").len(), 0);
+        assert_eq!(pairs("G\ta\ta\t1,2,0\nD\nG\tb\tb\t1,2,0\ta\n").len(), 0);
+        assert_eq!(pairs("G\t1\t1\t1,2,0\nG\tb\tb\t1,2,0\n").len(), 0);
+        assert_eq!(pairs("G\t👍\t👍\t1,2,0\nG\tb\tb\t1,2,0\n").len(), 0);
+    }
+
+    #[test]
+    fn a_history_cut_short_still_makes_a_pair() {
+        assert_eq!(pairs("G\tf\tf\t1,2,0\ta b c d e\nG\tg\tg\t1,2,0\tb c d e f\n").len(), 1);
+    }
+
+    #[test]
     fn bad_lines_are_skipped() {
         let read = parse("nonsense\nG\ta\ta\tx,y,z\nS\tnot\nK\tbroken\nG\ta\ta\t1,2,0\nC\n");
         assert_eq!(read.len(), 1);
@@ -387,8 +499,8 @@ mod tests {
     }
 
     #[test]
-    fn a_change_of_mind_stays_with_its_gesture() {
-        let text = format!("{G}\nM\n");
+    fn a_change_of_mind_and_a_revision_stay_with_their_gesture() {
+        let text = format!("{G}\nR\tbon\tbien\nM\n");
         assert_eq!(blocks(&text).len(), 1);
     }
 

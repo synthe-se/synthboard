@@ -15,7 +15,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 
-use synthswipe_bench::traces::{Fate, Traced, merge, parse};
+use synthswipe_bench::traces::{Fate, Revised, Traced, merge, parse};
 
 const OWNER_ONLY: u32 = 0o600;
 /// Fewer touches than this say nothing about a key.
@@ -82,6 +82,12 @@ fn print_days(gestures: &[Traced]) {
     }
 }
 
+/// How the next word's revisions went on the phone, in counts alone.
+fn print_revisions(gestures: &[Traced]) {
+    let count = |revised| gestures.iter().filter(|gesture| gesture.revised == revised).count();
+    println!("\nRevised by the next word: {} stayed, {} taken back", count(Revised::Stayed), count(Revised::TakenBack));
+}
+
 /// Lists what the owner meant and what was written: their own words.
 fn print_confusions(gestures: &[Traced]) {
     let mut confusions: HashMap<String, usize> = HashMap::new();
@@ -131,6 +137,7 @@ fn report(archive: &str, show_words: bool) -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
     print_days(&gestures);
+    print_revisions(&gestures);
     if show_words {
         print_confusions(&gestures);
     }

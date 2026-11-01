@@ -120,6 +120,12 @@ const RETRY_REACH: f32 = 0.6;
 /// Deleted tries of one gesture before it reads as it always does: past two, each
 /// new word would be worse than the ones already refused.
 const RETRY_TRIES: usize = 2;
+/// How much better an alternative must suit the next word than the word written, for
+/// that word to be revised, in nats of the gesture score: context points times
+/// `context_weight`. The table alone spans 1.2 here and one agreement is worth 1.5,
+/// so this takes an agreement backed by the corpus. Provisional, until tuned on the
+/// owner's traces with `synthswipe-bench --personal`.
+pub const NEXT_WORD_MARGIN: f32 = 1.75;
 /// Corrections kept for the session. A correction stands for the same gesture at
 /// once, even drawn too loosely to match its trace: the owner corrected one word
 /// three times in a row without it coming first.
@@ -364,6 +370,8 @@ struct Learned {
     earlier_form: Option<String>,
     /// The gestures filed for it by this use.
     taught: Vec<Vec<[f32; 2]>>,
+    imposed: bool,
+    leaning_before: f32,
 }
 
 impl Learned {
@@ -410,6 +418,8 @@ struct Pending {
     failed_gesture: Option<Vec<Sample>>,
     /// What the bar's corrections filed while this word waited.
     taught: Vec<(String, Vec<[f32; 2]>)>,
+    /// The session's language before this word moved it.
+    leaning_before: f32,
 }
 
 /// A correction that one backspace can still undo (B-9).
@@ -427,6 +437,18 @@ struct LastWord {
     spacing_after: Spacing,
     /// The gesture that wrote this word, if a swipe did.
     gesture: Vec<Sample>,
+    /// The next word may still replace this one: a gesture wrote it, and nothing
+    /// the user did says they looked at it.
+    revisable: bool,
+    /// What writing this word did to the word before it, until backspace undoes it.
+    revision: Option<Revision>,
+}
+
+/// A word replaced because of the word written after it, as both were written.
+#[derive(Debug, Clone)]
+struct Revision {
+    old: String,
+    new: String,
 }
 
 #[derive(Debug)]
@@ -523,6 +545,11 @@ pub struct Engine {
     last_shift_tap: Option<u64>,
     last_space_tap: Option<u64>,
     out: Vec<Command>,
+}
+
+/// Whether nothing separates this letter from the word written next.
+fn joins_next_word(letter: char) -> bool {
+    letter.is_whitespace() || matches!(letter, '\'' | '’' | '-' | '(' | '[' | '{' | '«' | '"' | '/' | '@' | '#')
 }
 
 fn utf16_len(text: &str) -> u32 {
@@ -664,11 +691,49 @@ impl Decoding {
     /// Everything the sentence says about a word: corpus affinity, agreement,
     /// the user's habit and the session's language. Swipes and taps share it.
     fn score(&self, previous: &str, history: &[String], contexts: &[String], word: &str) -> f32 {
-        let table = self.affinities.as_ref().map_or(0.0, |table| table.score(previous, word));
         let languages = self.lexicon.languages(word);
         let habit = HABIT_WEIGHT * self.memory.habit_after(contexts, previous, word)
             + FAMILIAR_WEIGHT * self.memory.familiarity(word);
-        table + self.agreement(history, word, languages) + habit + language_tilt(languages, self.leaning)
+        self.language_fit(previous, history, word) + habit + language_tilt(languages, self.leaning)
+    }
+
+    /// What the language itself says of a word after this sentence: the corpus
+    /// and the grammar, with nothing of this user.
+    fn language_fit(&self, previous: &str, history: &[String], word: &str) -> f32 {
+        let table = self.affinities.as_ref().map_or(0.0, |table| table.score(previous, word));
+        table + self.agreement(history, word, self.lexicon.languages(word))
+    }
+
+    /// How well `next` follows `word` after the sentence `before`, in nats.
+    fn fit_before(&self, before: &[String], word: &str, next: &str) -> f32 {
+        let mut history = before.to_vec();
+        history.extend(tokens(word));
+        let previous = history.last().map_or(SENTENCE_START, String::as_str);
+        self.params.context_weight * self.language_fit(previous, &history, next)
+    }
+
+    /// The alternative that `next` follows best, of the word that ends this
+    /// sentence, and how many nats better than it follows that word. The first
+    /// of equals wins, so that the same gestures always give the same words.
+    /// `None` if the sentence does not end on `word`, which means it ended before
+    /// it, or if changing the word would change the spacing.
+    #[must_use]
+    pub fn next_word_gain(&self, word: &str, alternatives: &[String], next: &str) -> Option<(usize, f32)> {
+        let spaced = |text: &str| text.chars().next_back().is_some_and(|letter| !joins_next_word(letter));
+        let said = tokens(word);
+        if said.is_empty() || !spaced(word) {
+            return None;
+        }
+        let before = self.history.strip_suffix(said.as_slice())?;
+        let written = self.fit_before(before, word, next);
+        let mut best: Option<(usize, f32)> = None;
+        for (index, alternative) in alternatives.iter().enumerate().filter(|(_, alternative)| spaced(alternative)) {
+            let gain = self.fit_before(before, alternative, next) - written;
+            if best.is_none_or(|(_, top)| gain > top) {
+                best = Some((index, gain));
+            }
+        }
+        best
     }
 
     /// Agreement is French, and an English sentence is not bad French. So it
@@ -1254,6 +1319,10 @@ impl Engine {
             word.text.zeroize();
             word.alternatives.zeroize();
             word.gesture.fill(BLANK_SAMPLE);
+            if let Some(mut revision) = word.revision.take() {
+                revision.old.zeroize();
+                revision.new.zeroize();
+            }
         }
         if let Some(mut pending) = self.pending.take() {
             pending.written.zeroize();
@@ -1386,8 +1455,80 @@ impl Engine {
             if self.learned.len() >= UNLEARNABLE_WORDS {
                 self.learned.remove(0).wipe();
             }
-            self.learned.push(Learned { previous: kept.previous, history: kept.history, word, lifted_block, wrote_form, earlier_form, taught });
+            let (imposed, leaning_before) = (kept.imposed, kept.leaning_before);
+            self.learned.push(Learned { previous: kept.previous, history: kept.history, word, lifted_block, wrote_form, earlier_form, taught, imposed, leaning_before });
         }
+    }
+
+    /// Puts `written` in memory in place of the word kept last, in the same place
+    /// of the same sentence, leaving memory as if that word had never been there.
+    fn relearn(&mut self, written: &str) {
+        let Some(last) = self.learned.pop() else {
+            return;
+        };
+        let (previous, history, imposed) = (last.previous.clone(), last.history.clone(), last.imposed);
+        let leaning_before = last.leaning_before;
+        self.take_back(vec![last]);
+        let following = self.pending.take();
+        self.pending = Some(Pending { previous, history, written: written.to_owned(), imposed, failed_gesture: None, taught: Vec::new(), leaning_before });
+        self.confirm_pending();
+        self.pending = following;
+        self.leaning = leaning_before;
+        self.update_leaning(written);
+    }
+
+    /// Replaces the word just written, if the word about to follow it fits one of
+    /// its alternatives far better. This comes before the next word is written, so
+    /// that the field never shows the pair to fix, and memory and traces see only
+    /// the final word.
+    fn revise_last(&mut self, decoding: &Decoding, next: &str) -> Option<Revision> {
+        let word = self.last_word.as_ref().filter(|word| {
+            word.revisable
+                && word.revision.is_none()
+                && self.field.allows_learning()
+                && self.spacing == Spacing::Phantom
+                && self.before.ends_with(&word.text)
+                && self.learned.last().is_some_and(|learned| learned.word == word.text.to_lowercase())
+        })?;
+        let (index, gain) = decoding.next_word_gain(&word.text, &word.alternatives, next)?;
+        let new = word.alternatives.get(index).filter(|_| gain > NEXT_WORD_MARGIN)?.clone();
+        let old = word.text.clone();
+        self.trace(format!("R\t{old}\t{new}"));
+        self.delete_units(utf16_len(&old));
+        self.insert_text(&new);
+        self.relearn(&new);
+        Some(Revision { old, new })
+    }
+
+    /// Puts back the word a revision replaced, as one backspace undoes a correction.
+    fn revert_revision(&mut self) -> bool {
+        let Some(word) = self.last_word.as_mut() else {
+            return false;
+        };
+        let Some(revision) = word.revision.take() else {
+            return false;
+        };
+        word.revisable = false;
+        let next = word.text.clone();
+        let revised = format!("{} {next}", revision.new);
+        let consistent = self.before.ends_with(&revised)
+            && self.pending.as_ref().is_some_and(|pending| pending.written == next)
+            && self.learned.last().is_some_and(|learned| learned.word == revision.new.to_lowercase());
+        if !consistent {
+            return false;
+        }
+        self.trace(format!("R\t{}\t{}", revision.new, revision.old));
+        self.delete_units(utf16_len(&revised));
+        self.insert_text(&format!("{} {next}", revision.old));
+        self.relearn(&revision.old);
+        let (previous, history, leaning_before) = (self.token_before(&next), self.history(&next), self.leaning);
+        self.update_leaning(&next);
+        if let Some(pending) = self.pending.as_mut() {
+            pending.previous = previous;
+            pending.history = history;
+            pending.leaning_before = leaning_before;
+        }
+        true
     }
 
     /// Files a gesture as the user's own trace for the word it really meant, and
@@ -1479,8 +1620,9 @@ impl Engine {
         let imposed = self.capitals_are_imposed(written);
         self.word_shift = Shift::Off;
         if self.field.allows_learning() {
+            let leaning_before = self.leaning;
             self.update_leaning(written);
-            self.pending = Some(Pending { previous, history, written: written.to_owned(), imposed, failed_gesture, taught: Vec::new() });
+            self.pending = Some(Pending { previous, history, written: written.to_owned(), imposed, failed_gesture, taught: Vec::new(), leaning_before });
         }
     }
 
@@ -2341,7 +2483,7 @@ impl Engine {
             self.request_context();
             return;
         }
-        if self.revert_correction() {
+        if self.revert_correction() || self.revert_revision() {
             return;
         }
         if self.spacing == Spacing::Phantom && self.last_word.is_none() {
@@ -2550,14 +2692,17 @@ impl Engine {
         if matches!(self.touch, Touch::DeleteSwipe { .. }) {
             return;
         }
-        if end == 0 {
+        let own_edit = self.expected_selections.iter().position(|&known| known == end && start == end);
+        // Replacing a sentence's first word passes through 0 on its way elsewhere.
+        let passing_through = own_edit.is_some_and(|position| position + 1 < self.expected_selections.len());
+        if end == 0 && !passing_through {
             // A chat app keeps the keyboard open after Send (M-3).
             self.leaning = LANGUAGE_START;
             self.confirm_pending();
             self.wipe_learned();
             self.save_memory();
         }
-        if let Some(position) = self.expected_selections.iter().position(|&known| known == end && start == end) {
+        if let Some(position) = own_edit {
             self.expected_selections.drain(..=position);
             return;
         }
@@ -2621,6 +2766,7 @@ impl Engine {
             self.refresh_shift();
         }
         self.word_shift = self.shift;
+        let revision = self.revise_last(&decoding, &first);
         if !self.layout_traced {
             self.trace_layout();
         }
@@ -2630,11 +2776,14 @@ impl Engine {
         self.trace(format!("G\t{first}\t{}\t{}\t{}\t{other}\t{reader}", words.join(","), points.join(" "), self.history("").join(" ")));
         let cased = self.apply_case(&first);
         let alternatives: Vec<String> = words.iter().skip(1).map(|word| case_like(&self.memory.form(word), &cased)).collect();
+        let revisable = self.failed_gesture.is_none();
         let another_try = self.take_retry_of(path);
         self.commit_word(cased, alternatives);
         self.retry = another_try;
         if let Some(word) = self.last_word.as_mut() {
             word.gesture = path.to_vec();
+            word.revisable = revisable;
+            word.revision = revision;
         }
     }
 
@@ -2652,10 +2801,7 @@ impl Engine {
     /// Writes a chosen word with the right spacing and keeps it replaceable.
     fn commit_word(&mut self, cased: String, alternatives: Vec<String>) {
         self.remember(self.previous_token(), self.history(""), &cased);
-        let needs_space = self.field.allows_auto_spacing()
-            && self.before.chars().next_back().is_some_and(|c| {
-                !c.is_whitespace() && !matches!(c, '\'' | '’' | '-' | '(' | '[' | '{' | '«' | '"' | '/' | '@' | '#')
-            });
+        let needs_space = self.field.allows_auto_spacing() && self.before.chars().next_back().is_some_and(|c| !joins_next_word(c));
         if needs_space {
             self.insert_text(" ");
         }
@@ -2669,6 +2815,8 @@ impl Engine {
             alternatives,
             spacing_after: self.spacing,
             gesture: Vec::new(),
+            revisable: false,
+            revision: None,
         });
     }
 
@@ -2842,6 +2990,7 @@ impl Engine {
             return;
         }
         let chosen = word.alternatives.remove(slot);
+        word.revisable = false;
         self.trace(format!("C\t{chosen}"));
         let gesture = std::mem::take(&mut word.gesture);
         self.take_back_other_picks(&chosen);
@@ -2871,7 +3020,7 @@ impl Default for Engine {
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    use synthswipe::{Encoder, MODEL_HEAD_BYTES, MODEL_MAGIC, split_model};
+    use synthswipe::{Bigrams, Encoder, MODEL_HEAD_BYTES, MODEL_MAGIC, split_model};
 
     use super::*;
 
@@ -3147,6 +3296,8 @@ mod tests {
             wrote_form: false,
             earlier_form: None,
             taught: Vec::new(),
+            imposed: false,
+            leaning_before: LANGUAGE_START,
         }
     }
 
@@ -6038,5 +6189,427 @@ mod tests {
         assert!(rig.engine.retry.is_some(), "another try keeps it going");
         rig.swipe("ou");
         assert_eq!(rig.text, "où ou");
+    }
+
+    /// `peur` and `peut` read alike, and only the verb after them tells which.
+    fn speak(rig: &mut Rig) {
+        rig.engine.set_lexicon(Arc::new(Lexicon::new([("peur", 170.0), ("peut", 165.0), ("aller", 150.0), ("allé", 140.0), ("merde", 150.0)])));
+        let mut pairs = Vec::new();
+        Bigrams::parse("peur 1000\npeut 1000\naller 1000\nrien 100000\npeut aller 900\n").compile_into(1, 0.0, &mut pairs);
+        rig.engine.set_language(
+            Arc::new(Affinities::from_bytes(&Affinities::to_bytes(pairs))),
+            Arc::new(Grammar::parse(&format!("{RULES}aller\t64\n"))),
+            Arc::new(NextWords::default()),
+        );
+    }
+
+    fn subject_rig(field: Field) -> Rig {
+        let mut rig = Rig::new(field);
+        speak(&mut rig);
+        rig
+    }
+
+    fn plain_subject_rig() -> Rig {
+        subject_rig(Field { input_type: android::CLASS_TEXT, ime_options: 0 })
+    }
+
+    fn echo_each_edit(rig: &mut Rig) {
+        for position in rig.engine.expected_selections.clone() {
+            rig.send(Event::Selection { start: position, end: position });
+        }
+    }
+
+    #[test]
+    fn an_edit_passing_through_the_start_of_the_field_is_not_a_sent_message() {
+        let mut rig = plain_rig();
+        rig.swipe("bonjour");
+        rig.engine.expected_selections = vec![0, 7];
+        rig.engine.leaning = 1.0;
+        rig.send(Event::Selection { start: 0, end: 0 });
+        assert!(rig.engine.pending.is_some());
+        assert_eq!(rig.engine.leaning, 1.0);
+        assert_eq!(rig.engine.expected_selections, [7]);
+        rig.engine.expected_selections = vec![0];
+        rig.send(Event::Selection { start: 0, end: 0 });
+        assert!(rig.engine.pending.is_none(), "an edit that ends there empties the field");
+    }
+
+    #[test]
+    fn a_word_after_it_revises_a_word_that_cannot_stand_before_it() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        assert_eq!(rig.text, "peur");
+        assert_eq!(the_alternatives(&rig).first().map(String::as_str), Some("peut"));
+        let step = rig.swipe_step("aller");
+        assert_eq!(rig.text, "peut aller");
+        let edits: Vec<&Command> = step.commands.iter().filter(|command| matches!(command, Command::Commit { .. } | Command::DeleteBefore { .. })).collect();
+        assert_eq!(edits.first(), Some(&&Command::DeleteBefore { units: 4 }));
+    }
+
+    #[test]
+    fn a_revised_word_keeps_the_capital_of_its_sentence() {
+        let mut rig = subject_rig(TEXT_FIELD);
+        rig.swipe("peur");
+        rig.swipe("aller");
+        assert_eq!(rig.text, "Peut aller");
+        rig.tap("⌫");
+        assert_eq!(rig.text, "Peur aller");
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.memory.next_after("<s>"), ["peur"]);
+    }
+
+    #[test]
+    fn a_word_that_fits_stays() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("merde");
+        assert_eq!(rig.text, "peur merde");
+    }
+
+    #[test]
+    fn memory_learns_only_the_revised_word() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("aller");
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.memory.next_after("<s>"), ["peut"]);
+        assert_eq!(rig.engine.memory.next_after("peut"), ["aller"]);
+        assert_eq!(rig.engine.memory.next_after("peur"), Vec::<String>::new());
+        assert_eq!(rig.engine.memory.familiarity("peur"), 0.0);
+        let words: Vec<&str> = rig.engine.learned.iter().map(|learned| learned.word.as_str()).collect();
+        assert_eq!(words, ["peut", "aller"]);
+    }
+
+    #[test]
+    fn a_revised_word_can_be_taken_back_from_memory_by_erasing_it() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("aller");
+        rig.engine.confirm_pending();
+        rig.engine.last_word = None;
+        rig.engine.spacing = Spacing::None;
+        clear_word(&mut rig);
+        assert_eq!(rig.engine.memory.next_after("<s>"), Vec::<String>::new());
+        assert!(rig.engine.learned.is_empty());
+    }
+
+    #[test]
+    fn the_language_of_the_session_follows_the_revised_word() {
+        let mut rig = plain_subject_rig();
+        rig.engine.set_lexicon(Arc::new(Lexicon::with_languages([("peur", 170.0, 0), ("peut", 165.0, FIRST_LANGUAGE), ("aller", 150.0, 0)])));
+        rig.swipe("peur");
+        assert_eq!(rig.engine.leaning, LANGUAGE_START);
+        rig.swipe("aller");
+        assert_eq!(rig.text, "peut aller");
+        assert_eq!(rig.engine.leaning, next_leaning(LANGUAGE_START, FIRST_LANGUAGE));
+        rig.tap("⌫");
+        assert_eq!(rig.engine.leaning, LANGUAGE_START);
+        assert_eq!(rig.engine.pending.as_ref().unwrap().leaning_before, LANGUAGE_START);
+    }
+
+    #[test]
+    fn the_trace_says_what_was_revised_before_the_word_that_revised_it() {
+        let (mut rig, secret) = traced_rig(Field { input_type: android::CLASS_TEXT, ime_options: 0 });
+        speak(&mut rig);
+        rig.swipe("peur");
+        let lines = opened_lines(&rig.swipe_step("aller"), &secret);
+        assert_eq!(lines.first().map(String::as_str), Some("R\tpeur\tpeut"));
+        let gesture = lines.get(1).unwrap();
+        assert_eq!(gesture.split('\t').nth(4), Some("peut"), "the history holds the final word");
+        let lines = opened_lines(&rig.tap_step("⌫"), &secret);
+        assert_eq!(lines, ["R\tpeut\tpeur"]);
+        let lines = opened_lines(&rig.tap_step("⌫"), &secret);
+        assert_eq!(lines, ["D"]);
+    }
+
+    #[test]
+    fn backspace_takes_the_revision_back_first() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("aller");
+        rig.tap("⌫");
+        assert_eq!(rig.text, "peur aller");
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.memory.next_after("<s>"), ["peur"]);
+        assert_eq!(rig.engine.memory.next_after("peur"), ["aller"]);
+        assert_eq!(rig.engine.memory.next_after("peut"), Vec::<String>::new());
+    }
+
+    #[test]
+    fn a_second_backspace_deletes_as_usual() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("aller");
+        rig.tap("⌫");
+        rig.tap("⌫");
+        assert_eq!(rig.text, "peur alle");
+    }
+
+    #[test]
+    fn a_word_taken_back_is_not_revised_again() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("aller");
+        rig.tap("⌫");
+        assert!(!rig.engine.last_word.as_ref().unwrap().revisable);
+    }
+
+    #[test]
+    fn a_revision_survives_the_echoes_of_its_edits() {
+        for each_edit in [true, false] {
+            let mut rig = plain_subject_rig();
+            rig.swipe("peur");
+            echo_each_edit(&mut rig);
+            rig.swipe("aller");
+            if each_edit {
+                echo_each_edit(&mut rig);
+            } else {
+                // A batched edit reports only where the cursor ended.
+                let end = rig.engine.cursor;
+                rig.send(Event::Selection { start: end, end });
+            }
+            assert_eq!(rig.engine.expected_selections.len(), 0);
+            assert!(rig.engine.last_word.is_some());
+            rig.tap("⌫");
+            assert_eq!(rig.text, "peur aller");
+            assert_eq!(rig.engine.cursor, utf16_len("peur aller"));
+            echo_each_edit(&mut rig);
+            rig.tap("⌫");
+            assert_eq!(rig.text, "peur alle");
+        }
+    }
+
+    #[test]
+    fn an_alternative_of_the_next_word_can_still_be_tapped() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("aller");
+        let offered = the_alternatives(&rig);
+        let chosen = offered.first().unwrap().clone();
+        rig.tap_at(CENTER_OF_BAR);
+        assert_eq!(rig.text, format!("peut {chosen}"));
+        rig.engine.confirm_pending();
+        assert_eq!(rig.engine.memory.next_after("peut"), [chosen]);
+    }
+
+    #[test]
+    fn taking_a_revision_back_keeps_an_alternative_tapped_after_it() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("aller");
+        let chosen = the_alternatives(&rig).first().unwrap().clone();
+        rig.tap_at(CENTER_OF_BAR);
+        rig.tap("⌫");
+        assert_eq!(rig.text, format!("peur {chosen}"));
+    }
+
+    #[test]
+    fn a_word_after_a_revision_cannot_revise_the_word_that_justified_it() {
+        let write = |keeps_revision: bool| {
+            let mut rig = plain_subject_rig();
+            rig.swipe("peur");
+            rig.swipe("aller");
+            let last = rig.engine.last_word.as_mut().unwrap();
+            last.alternatives = vec!["peut".to_owned()];
+            if !keeps_revision {
+                last.revision = None;
+            }
+            rig.swipe("aller");
+            rig.text
+        };
+        assert_eq!(write(true), "peut aller aller");
+        assert_eq!(write(false), "peut peut aller", "the same word without a revision behind it");
+    }
+
+    #[test]
+    fn the_same_two_gestures_always_give_the_same_two_words() {
+        let write = || {
+            let mut rig = plain_subject_rig();
+            rig.swipe("peur");
+            rig.swipe("aller");
+            rig.text
+        };
+        assert_eq!(write(), write());
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("aller");
+        rig.tap_at(rig.space());
+        rig.send(Event::Text { text: ". ".to_owned() });
+        rig.swipe("peur");
+        rig.swipe("aller");
+        assert!(rig.text.ends_with(". peut aller"), "{}", rig.text);
+    }
+
+    #[test]
+    fn nothing_is_revised_where_nothing_may_be_learned() {
+        let mut rig = subject_rig(NO_LEARNING);
+        rig.swipe("peur");
+        rig.swipe("aller");
+        assert_eq!(rig.text, "peur aller");
+        let mut rig = subject_rig(Field { input_type: android::CLASS_TEXT | android::NO_SUGGESTIONS, ime_options: 0 });
+        rig.swipe("peur");
+        rig.swipe("aller");
+        assert_eq!(rig.text, "peur aller");
+    }
+
+    #[test]
+    fn nothing_is_revised_across_a_sentence_or_a_comma_or_a_space() {
+        for mark in [".", ","] {
+            let mut rig = plain_subject_rig();
+            rig.swipe("peur");
+            rig.tap(mark);
+            rig.swipe("aller");
+            assert_eq!(rig.text, format!("peur{mark} aller"));
+        }
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.tap_at(rig.space());
+        rig.swipe("aller");
+        assert_eq!(rig.text, "peur aller");
+    }
+
+    #[test]
+    fn nothing_is_revised_after_the_cursor_moved() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.send(Event::Selection { start: 2, end: 2 });
+        rig.send(Event::Selection { start: 4, end: 4 });
+        rig.swipe("aller");
+        assert_eq!(rig.text, "peur aller");
+    }
+
+    #[test]
+    fn a_word_the_user_chose_is_not_revised() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.tap_at(CENTER_OF_BAR);
+        rig.tap_at(CENTER_OF_BAR);
+        assert_eq!(rig.text, "peur");
+        rig.swipe("aller");
+        assert_eq!(rig.text, "peur aller");
+    }
+
+    #[test]
+    fn a_word_written_after_a_deletion_is_not_revised() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peut");
+        assert_eq!(rig.text, "peut");
+        rig.tap("⌫");
+        rig.swipe("peut");
+        assert_eq!(rig.text, "peur");
+        assert_eq!(the_alternatives(&rig).first().map(String::as_str), Some("peut"));
+        rig.swipe("aller");
+        assert_eq!(rig.text, "peur aller");
+    }
+
+    #[test]
+    fn a_tapped_word_is_not_revised() {
+        let mut rig = plain_subject_rig();
+        type_word(&mut rig, "peur");
+        rig.swipe("aller");
+        assert_eq!(rig.text, "peur aller");
+    }
+
+    #[test]
+    fn a_word_memory_no_longer_holds_is_not_revised() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        let t = lower_gesture(&mut rig, "aller");
+        rig.engine.wipe_learned();
+        let (x, y) = rig.center("r");
+        rig.send(Event::Up { pointer: 0, x, y, t });
+        assert_eq!(rig.text, "peur aller");
+    }
+
+    #[test]
+    fn a_revision_is_wiped_with_the_rest_when_the_keyboard_hides() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("aller");
+        assert!(rig.engine.last_word.as_ref().unwrap().revision.is_some());
+        rig.send(Event::Hidden);
+        assert!(rig.engine.last_word.is_none());
+    }
+
+    #[test]
+    fn a_backspace_after_more_text_leaves_the_revision() {
+        let mut rig = plain_subject_rig();
+        rig.swipe("peur");
+        rig.swipe("aller");
+        rig.tap(",");
+        rig.tap("⌫");
+        assert_eq!(rig.text, "peut aller");
+    }
+
+    fn sentence(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    fn subject_decoding(rig: &Rig, history: &[&str]) -> Decoding {
+        Decoding { history: sentence(history), ..rig.engine.snapshot().unwrap() }
+    }
+
+    #[test]
+    fn the_gain_is_the_fit_of_the_alternative_above_the_fit_of_the_word() {
+        let rig = plain_subject_rig();
+        let decoding = subject_decoding(&rig, &["peur"]);
+        let alternatives = sentence(&["merde", "peut"]);
+        let (index, gain) = decoding.next_word_gain("peur", &alternatives, "aller").unwrap();
+        assert_eq!(index, 1);
+        let table = rig.engine.affinities.as_ref().unwrap().score("peut", "aller");
+        assert!(table > 0.0);
+        let expected = rig.engine.params.context_weight * (GRAMMAR_WEIGHT + table);
+        assert!((gain - expected).abs() < 1e-5, "{gain} {expected}");
+    }
+
+    #[test]
+    fn the_first_of_equal_alternatives_wins() {
+        let rig = plain_subject_rig();
+        let decoding = subject_decoding(&rig, &["peur"]);
+        let alternatives = sentence(&["merde", "bon"]);
+        assert_eq!(decoding.next_word_gain("peur", &alternatives, "aller").map(|found| found.0), Some(0));
+    }
+
+    #[test]
+    fn a_sentence_that_does_not_end_on_the_word_has_no_gain() {
+        let rig = plain_subject_rig();
+        let alternatives = sentence(&["peut"]);
+        assert!(subject_decoding(&rig, &[]).next_word_gain("peur", &alternatives, "aller").is_none());
+        assert!(subject_decoding(&rig, &["autre"]).next_word_gain("peur", &alternatives, "aller").is_none());
+    }
+
+    #[test]
+    fn a_word_or_an_alternative_that_joins_the_next_word_has_no_gain() {
+        let rig = plain_subject_rig();
+        let decoding = subject_decoding(&rig, &["l'"]);
+        assert!(decoding.next_word_gain("l'", &sentence(&["peut"]), "aller").is_none());
+        let decoding = subject_decoding(&rig, &["peur"]);
+        assert!(decoding.next_word_gain("peur", &sentence(&["n'"]), "aller").is_none());
+        assert_eq!(decoding.next_word_gain("peur", &sentence(&["n'", "peut"]), "aller").map(|found| found.0), Some(1));
+        assert!(decoding.next_word_gain("👍", &sentence(&["peut"]), "aller").is_none());
+    }
+
+    #[test]
+    fn a_gain_equal_to_the_margin_revises_nothing() {
+        let mut rig = plain_subject_rig();
+        rig.engine.set_language(Arc::new(Affinities::default()), Arc::clone(rig.engine.grammar.as_ref().unwrap()), Arc::new(NextWords::default()));
+        rig.engine.params.context_weight = NEXT_WORD_MARGIN / GRAMMAR_WEIGHT;
+        let (_, gain) = subject_decoding(&rig, &["peur"]).next_word_gain("peur", &sentence(&["peut"]), "aller").unwrap();
+        assert_eq!(gain, NEXT_WORD_MARGIN);
+        rig.swipe("peur");
+        rig.swipe("aller");
+        assert_eq!(rig.text, "peur aller");
+    }
+
+    #[test]
+    fn only_a_gain_past_the_margin_revises() {
+        let rig = plain_subject_rig();
+        let (_, gain) = subject_decoding(&rig, &["peur"]).next_word_gain("peur", &sentence(&["peut"]), "aller").unwrap();
+        assert!(gain > NEXT_WORD_MARGIN);
+        let mut rig = plain_subject_rig();
+        rig.engine.params.context_weight *= 0.95 * NEXT_WORD_MARGIN / gain;
+        rig.swipe("peur");
+        rig.swipe("aller");
+        assert_eq!(rig.text, "peur aller");
     }
 }

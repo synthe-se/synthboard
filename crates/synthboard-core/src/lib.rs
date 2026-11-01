@@ -15,7 +15,7 @@ mod wire;
 
 pub use board::{Alphabet, LETTERS_LABEL, Layer, POPUP_HEIGHT_DP};
 pub use emoji::{Catalog, EmojiGroup, EmojiItem, SKIN_TONES};
-pub use engine::{BAR_SLOTS, Decoding, Engine, Event, FIRST_LANGUAGE, Field, Language, SEARCH_CELLS, SECOND_LANGUAGE, SLOT_CENTERS, Step};
+pub use engine::{BAR_SLOTS, Decoding, Engine, Event, FIRST_LANGUAGE, Field, Language, NEXT_WORD_MARGIN, SEARCH_CELLS, SECOND_LANGUAGE, SLOT_CENTERS, Step};
 pub use memory::{Memory, contexts};
 pub use predict::NextWords;
 pub use wire::{Command, DrawnKey, Haptic, Icon, ShiftLook};

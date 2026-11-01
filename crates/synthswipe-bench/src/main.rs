@@ -19,6 +19,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 use synthboard_core::{Decoding, Language};
 use synthswipe::{Affinities, Grammar, Layout, Params, decode_in_context, fits_gesture, fold};
+use synthswipe_bench::revisions;
 use synthswipe_bench::traces::{Fate, Reader, Traced, TracedKey, layout_of, parse};
 
 use load::{Cell, FutoFilter, Gesture, Lexicons};
@@ -292,6 +293,11 @@ fn run_personal(text: &str, params: &Params, neural: Option<Arc<synthswipe::Neur
     println!("corrections that fit {corrections_fit}/{corrections}; rivals with the same ends that fit {rivals_fit}/{rivals}");
     println!("written by the network {by_network}, by the geometry {by_geometry}; the other reader recorded on {recorded}, and differed on {differed}: the written word was right {written_right}, the other {other_right}");
     println!("changes of mind, left out of everything here: {rephrased}");
+    let (pairs, tallies) = revisions::replay(&gestures, &assets.language, params);
+    println!("next word, over {pairs} pairs of gestures:");
+    for (margin, revisions::Tally { help, hurt, nothing }) in tallies {
+        println!("  margin {margin:.2}: helps {help}, hurts {hurt}, changes nothing {nothing}");
+    }
     if show_words {
         let mut worst: Vec<_> = misses.into_iter().collect();
         worst.sort_by_key(|entry| std::cmp::Reverse(entry.1));
