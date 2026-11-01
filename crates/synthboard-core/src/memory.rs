@@ -146,6 +146,16 @@ impl Memory {
             .then(|| Arc::new(Lexicon::new(learned.into_iter().map(|word| (word, LEARNED_WEIGHT)))));
     }
 
+    /// Adopts a word at once: the user refused to have it corrected, which says
+    /// more than any count of uses.
+    pub fn keep(&mut self, word: &str, known: impl Fn(&str) -> bool) {
+        let word = word.to_lowercase();
+        self.blocked.remove(&word);
+        let count = self.words.entry(word).or_default();
+        *count = (*count).max(VALIDATIONS);
+        self.rebuild(known);
+    }
+
     /// Records that `word` was validated after `previous`.
     pub fn learn(&mut self, previous: &str, word: &str, known: impl Fn(&str) -> bool) {
         if self.words.len() + self.pairs.values().map(HashMap::len).sum::<usize>() >= MAX_ENTRIES {
@@ -469,6 +479,17 @@ mod tests {
         write(&mut memory, "je te vois");
         let expected = 2.0 * 2.0_f32.ln();
         assert!((memory.habit_after(&words("je te"), "te", "vois") - expected).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_kept_word_is_a_word_at_once_and_survives_saving() {
+        let mut memory = Memory::default();
+        memory.forget("synthe", |_| false);
+        memory.keep("Synthe", |_| false);
+        assert!(!memory.is_blocked("synthe"));
+        assert!(memory.extra_words().is_some_and(|words| words.contains("synthe")));
+        let saved = Memory::parse(&memory.to_text(), |_| false);
+        assert!(saved.extra_words().is_some_and(|words| words.contains("synthe")));
     }
 
     #[test]

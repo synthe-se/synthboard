@@ -1721,6 +1721,12 @@ impl Engine {
         self.insert_text(&fix.typed);
         self.insert_text(trailing);
         self.pending = None;
+        if self.field.allows_learning() {
+            let known = self.known();
+            Arc::make_mut(&mut self.memory).keep(&fix.typed, known);
+            self.memory_changed = true;
+            self.save_memory();
+        }
         self.protected.push(fix.typed);
         self.refresh_shift();
         true
@@ -3542,6 +3548,35 @@ mod tests {
         assert!(offered.contains(&"yhan".to_owned()));
         rig.tap_at(rig.space());
         assert_eq!(rig.text, "than ");
+    }
+
+    #[test]
+    fn a_refused_correction_stays_refused_in_later_sessions() {
+        let mut rig = plain_rig();
+        type_word(&mut rig, "yhan");
+        rig.tap_at(rig.space());
+        assert!(rig.text.contains("than"), "{}", rig.text);
+        rig.tap("⌫");
+        assert!(rig.text.contains("yhan"), "{}", rig.text);
+        let saved = rig.engine.memory.to_text();
+        assert!(saved.contains("yhan"));
+        rig.send(Event::Hidden);
+        rig.text.clear();
+        rig.send(Event::Shown { field: rig.engine.field, before: String::new(), after: String::new(), cursor: 0 });
+        rig.engine.load_memory(&saved);
+        type_word(&mut rig, "yhan");
+        rig.tap_at(rig.space());
+        assert!(rig.text.contains("yhan"), "{}", rig.text);
+    }
+
+    #[test]
+    fn a_field_that_forbids_learning_keeps_a_refusal_only_for_the_session() {
+        let field = Field { input_type: android::CLASS_TEXT, ime_options: android::NO_PERSONALIZED_LEARNING };
+        let mut rig = Rig::new(field);
+        type_word(&mut rig, "yhan");
+        rig.tap_at(rig.space());
+        rig.tap("⌫");
+        assert_eq!(rig.engine.memory.familiarity("yhan"), 0.0);
     }
 
     #[test]
