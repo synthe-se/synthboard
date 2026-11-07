@@ -6,6 +6,8 @@
 
 <p align="center">A swipe keyboard for Android that keeps what you type to itself.</p>
 
+<p align="center"><em>In active development.</em></p>
+
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="android/app/src/test/snapshots/swipe-dark.png">

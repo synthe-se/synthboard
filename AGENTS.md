@@ -21,7 +21,6 @@ Synthboard is a privacy-first, offline Android swipe keyboard with a reusable op
 - `unsafe` lives in `crates/synthboard-ffi/src/jni.rs` and `wipe.rs` and nowhere else. ONNX Runtime, static C++ reached through `synthswipe-onnx`, is the one exception to safe native code: it reads only our signed model, and its blocks are wiped through `--wrap=free`. Types that cross to Kotlin are declared with `wire_struct!` or `wire_enum!`, and the Kotlin is generated from them at build time.
 - Layouts and languages are data. AZERTY is the owner's layout, never a hard-wired assumption; QWERTY users are first-class. French and English stay active together and the language lean only tilts ranking.
 - Research a domain before building it. Finish features against a behaviour inventory; do not present a stage as an endpoint.
-- Keyboard product, library and weights from FUTO stay out of options, comparisons and dependencies. Its public swipe datasets are welcome.
 
 ## Privacy and security
 
